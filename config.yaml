@@ -1,0 +1,52 @@
+server:
+  host: 127.0.0.1
+  port: 8080
+
+ollama:
+  host: http://127.0.0.1:11434
+  # 8 GB default: snappy. Switch to qwen2.5:7b-instruct-q4_K_M if Whisper is on CPU.
+  model: qwen2.5:3b
+  timeout_seconds: 120
+
+whisper:
+  model_size: small
+  # auto | cuda | cpu  — auto uses CUDA when ctranslate2 sees an NVIDIA GPU
+  device: auto
+  language: en
+  compute_type_cuda: float16
+  compute_type_cpu: int8
+
+tts:
+  enabled: true
+  mute: false
+  # Cute US female (Amy). Other females: en_US-kristin-medium, en_US-hfc_female-medium
+  voice: en_US-amy-medium
+  length_scale: 1.05
+  piper_dir: models/piper
+  max_sentence_chars: 280
+
+audio:
+  sample_rate: 16000
+  mic_device: null          # null = system default; override with a device index
+  speaker_device: null
+  silence_ms: 800
+  min_utterance_ms: 350
+  energy_threshold: 0.012   # RMS; raise if it false-triggers
+  max_utterance_seconds: 20
+
+chat:
+  buffer_size: 40
+  cooldown_seconds: 12
+  max_replies_per_minute: 8
+  scan_interval_seconds: 3
+  mention_boost: true
+  post_voice_replies_to_chat: true
+  chat_max_chars: 200
+  per_user_cooldown_seconds: 20
+  auto_reconnect: true
+
+memory:
+  spoken_turns: 8
+  chat_context_lines: 20
+  events: 80
+  viewers: 40

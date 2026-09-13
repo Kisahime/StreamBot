@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Local Twitch Cohost</title>
+  <link rel="stylesheet" href="/static/app.css?v=4" />
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div>
+        <p class="eyebrow">Local · NVIDIA · no cloud LLM</p>
+        <h1>Twitch Cohost</h1>
+      </div>
+      <div class="phase" id="phasePill">idle</div>
+    </header>
+
+    <section class="grid">
+      <article class="panel controls">
+        <h2>Booth</h2>
+        <div class="row">
+          <button id="listenBtn" class="primary">Start listening</button>
+          <button id="pttBtn">Hold to talk</button>
+        </div>
+        <div class="row">
+          <button id="muteBtn">Mute voice</button>
+          <button id="stopBtn">Stop speaking</button>
+        </div>
+        <div class="row">
+          <button id="twitchBtn">Connect Twitch</button>
+          <button id="personaBtn">Reload persona</button>
+        </div>
+        <div class="row">
+          <button id="clearMemBtn">Clear memory</button>
+        </div>
+        <p class="hint" id="hint"></p>
+      </article>
+
+      <article class="panel status">
+        <h2>Systems</h2>
+        <ul id="sysList" class="sys"></ul>
+        <h2 class="dev-title">Audio devices</h2>
+        <p class="hint devices" id="deviceList">Loading devices…</p>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="panel caption-card">
+        <h2>On air</h2>
+        <p class="you" id="lastUser">Waiting for the streamer…</p>
+        <p class="caption" id="caption">—</p>
+      </article>
+      <article class="panel chat-card">
+        <h2>Chat buffer</h2>
+        <div id="chatLog" class="log"></div>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="panel log-card">
+        <h2>Memory</h2>
+        <div id="memLog" class="log"></div>
+      </article>
+      <article class="panel log-card">
+        <h2>Log</h2>
+        <div id="eventLog" class="log"></div>
+      </article>
+    </section>
+  </div>
+  <script src="/static/app.js?v=4"></script>
+</body>
+</html>
