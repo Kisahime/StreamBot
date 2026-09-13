@@ -5,9 +5,24 @@ from typing import Optional
 
 import numpy as np
 
+from src.audio.cuda_libs import ensure_cuda_dlls
 from src.settings import Settings
 
 log = logging.getLogger("cohost.stt")
+
+ensure_cuda_dlls()
+
+_GPU_FAIL_MARKERS = (
+    "cublas",
+    "cudnn",
+    "cudart",
+    "cuda",
+    "nvrtc",
+    "nvcuda",
+    "cubin",
+    "no kernel image",
+    "invalid device function",
+)
 
 
 def pick_whisper_device(pref: str) -> tuple[str, str]:
@@ -29,6 +44,11 @@ def pick_whisper_device(pref: str) -> tuple[str, str]:
     return "cpu", "int8"
 
 
+def _looks_like_gpu_fail(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(m in msg for m in _GPU_FAIL_MARKERS)
+
+
 class SpeechToText:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -40,6 +60,7 @@ class SpeechToText:
     def load(self) -> None:
         from faster_whisper import WhisperModel
 
+        ensure_cuda_dlls()
         device, compute = pick_whisper_device(self.settings.whisper_device)
         if device == "cuda":
             compute = self.settings.compute_type_cuda
@@ -54,15 +75,20 @@ class SpeechToText:
         except Exception as e:
             if device != "cpu":
                 log.warning("Whisper CUDA load failed (%s); retrying CPU", e)
-                self.model = WhisperModel(
-                    self.settings.whisper_model, device="cpu", compute_type=self.settings.compute_type_cpu
-                )
-                self.device = "cpu"
-                self.compute_type = self.settings.compute_type_cpu
-                self.error = None
+                self._load_cpu()
+                self.error = f"CUDA unavailable ({e}); using CPU"
             else:
                 self.error = str(e)
                 raise
+
+    def _load_cpu(self) -> None:
+        from faster_whisper import WhisperModel
+
+        self.model = WhisperModel(
+            self.settings.whisper_model, device="cpu", compute_type=self.settings.compute_type_cpu
+        )
+        self.device = "cpu"
+        self.compute_type = self.settings.compute_type_cpu
 
     def transcribe(self, audio: np.ndarray) -> str:
         if self.model is None:
@@ -72,6 +98,17 @@ class SpeechToText:
         peak = float(np.max(np.abs(audio))) if audio.size else 0.0
         if peak > 1.0:
             audio = audio / peak
+        try:
+            return self._run(audio)
+        except Exception as e:
+            if self.device == "cuda" and _looks_like_gpu_fail(e):
+                log.warning("Whisper CUDA transcribe failed (%s); switching to CPU", e)
+                self._load_cpu()
+                self.error = f"CUDA runtime failed ({e}); using CPU"
+                return self._run(audio)
+            raise
+
+    def _run(self, audio: np.ndarray) -> str:
         segments, _info = self.model.transcribe(
             audio,
             language=self.settings.whisper_language or None,
@@ -79,5 +116,4 @@ class SpeechToText:
             beam_size=1,
             without_timestamps=True,
         )
-        text = " ".join(seg.text.strip() for seg in segments).strip()
-        return text
+        return " ".join(seg.text.strip() for seg in segments).strip()

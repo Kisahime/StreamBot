@@ -115,7 +115,7 @@ Voice replies can be echoed to chat (`chat.post_voice_replies_to_chat`).
 - **Ollama down** on the dashboard: start Ollama from the system tray, then `ollama pull qwen2.5:3b`.
 - **Twitch connect error**: token scopes, nick mismatch, or `.env` not saved in the project root.
 - **No mic**: another app has exclusive WASAPI access; close it or pick another input index.
-- **Whisper CUDA failed**: the app falls back to CPU automatically.
+- **Whisper CUDA failed** / **`cublas64_12.dll` not found**: the NVIDIA *driver* is not the CUDA 12 math libraries. Re-run `start.bat` so it installs `nvidia-cublas-cu12` (and friends) into the venv. If a brand-new GPU (RTX 50-series) still errors, the app will retry Whisper on CPU; you can also set `whisper.device: cpu` in `config.yaml`.
 - **Piper missing**: delete `models/piper` and restart so it re-downloads.
 
 ## Out of scope (v1)

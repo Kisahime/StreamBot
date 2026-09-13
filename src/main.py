@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from src.audio.cuda_libs import ensure_cuda_dlls
 from src.health import snapshot
 from src.hub import Hub
 from src.orchestrator import Orchestrator
@@ -36,6 +37,7 @@ class MuteBody(BaseModel):
 def create_app() -> FastAPI:
     @asynccontextmanager
     async def life(app: FastAPI):
+        ensure_cuda_dlls()
         settings = load_settings()
         hub = Hub()
         orch = Orchestrator(settings, hub)

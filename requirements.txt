@@ -8,3 +8,7 @@ sounddevice>=0.5.1
 faster-whisper>=1.1.0
 twitchio>=2.10.0,<3
 huggingface_hub>=0.25.0
+# CUDA 12 runtime bits so Whisper can find cublas64_12.dll without a full toolkit
+nvidia-cuda-runtime-cu12>=12.0.0
+nvidia-cublas-cu12>=12.0.0
+nvidia-cudnn-cu12>=9.0.0
