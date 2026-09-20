@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+models/
+*.onnx
+*.onnx.json
+piper/
+.idea/
+.vscode/
+*.wav
+*.log
+data/*
+!data/.gitkeep
