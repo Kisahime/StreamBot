@@ -484,6 +484,8 @@ async function refreshHealth() {
     renderSys(health);
     const st = health.status || {};
     applyStatus(st);
+    const queueRes = await fetch("/api/queue", { cache: "no-store" });
+    if (queueRes.ok) renderQueue(await queueRes.json());
     if (health.streamer && streamerName && streamerLogin && document.activeElement !== streamerName && document.activeElement !== streamerLogin) {
       if (!streamerName.value) streamerName.value = health.streamer.display_name || "";
       if (!streamerLogin.value) streamerLogin.value = health.streamer.twitch_login || "";
