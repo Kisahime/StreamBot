@@ -256,7 +256,11 @@ class Orchestrator:
 
     async def apply_profile(self, name: str) -> str:
         canonical = self._install_profile(name, persist=True)
-        await self.hub.patch_status(mood=self.mood, profile=canonical)
+        await self.hub.patch_status(
+            mood=self.mood,
+            profile=canonical,
+            post_voice=bool(self.settings.post_voice_replies_to_chat),
+        )
         return canonical
 
     async def start(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -271,6 +275,9 @@ class Orchestrator:
             eventsub="disconnected",
             mood=self.mood,
             duck=self.duck.mode,
+            post_voice=bool(self.settings.post_voice_replies_to_chat),
+            duck_enabled=bool(self.settings.duck_enabled),
+            wake=self._wake_status(),
         )
         await self._resolve_audio_devices()
         self._tasks = [
@@ -472,8 +479,19 @@ class Orchestrator:
         await self.hub.patch_status(tts_mute=mute)
 
     def set_post_voice(self, enabled: bool) -> None:
-        self.settings.post_voice_replies_to_chat = enabled
+        self.settings.post_voice_replies_to_chat = bool(enabled)
+        self.hub.status["post_voice"] = bool(enabled)
         self._persist_booth()
+
+    def _wake_status(self) -> dict:
+        wake = getattr(self.mic, "wake", None)
+        if wake is None or not hasattr(wake, "status"):
+            return {"enabled": False}
+        try:
+            reported = wake.status()
+        except Exception:
+            return {"enabled": False}
+        return reported if isinstance(reported, dict) else {"enabled": False}
 
     async def set_vad(self, silence_ms: int, energy: float, max_seconds: float) -> None:
         self.settings.silence_ms = int(silence_ms)
@@ -547,6 +565,8 @@ class Orchestrator:
 
     def set_duck(self, enabled: bool) -> None:
         self.duck.set_enabled(enabled)
+        self.hub.status["duck_enabled"] = bool(enabled)
+        self.hub.status["duck"] = self.duck.mode
         update_config({"audio.duck_enabled": enabled})
 
     def _bump_voice(self) -> int:

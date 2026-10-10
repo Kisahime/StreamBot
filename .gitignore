@@ -13,3 +13,6 @@ piper/
 data/*
 !data/.gitkeep
 logs/
+backups/
+.coverage
+htmlcov/

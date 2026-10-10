@@ -99,6 +99,20 @@ async function defPost(url, body) {
   return data;
 }
 
+async function post(url, body) {
+  try {
+    return await defPost(url, body);
+  } catch (e) {
+    const message = String((e && e.message) || e);
+    if (hint) hint.textContent = message;
+    return { ok: false, error: message };
+  }
+}
+
+function failed(data) {
+  return data && data.ok === false;
+}
+
 function typingInField() {
   const tag = (document.activeElement && document.activeElement.tagName) || "";
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
@@ -106,7 +120,7 @@ function typingInField() {
 
 listenBtn.addEventListener("click", async () => {
   try {
-    await defPost("/api/listen", { enabled: !listenOn });
+    await post("/api/listen", { enabled: !listenOn });
   } catch (e) {
     hint.textContent = String(e.message || e);
   }
@@ -116,7 +130,7 @@ function ptt(down) {
   if (pttHeld === down) return;
   pttHeld = down;
   pttBtn.classList.toggle("held", down);
-  defPost("/api/ptt", { down }).catch((e) => logLine(eventLog, String(e.message || e), "warn"));
+  post("/api/ptt", { down }).catch((e) => logLine(eventLog, String(e.message || e), "warn"));
 }
 pttBtn.addEventListener("mousedown", () => ptt(true));
 pttBtn.addEventListener("mouseup", () => ptt(false));
@@ -141,101 +155,93 @@ window.addEventListener("keyup", (e) => {
 });
 
 muteBtn.addEventListener("click", async () => {
-  await defPost("/api/tts/mute", { mute: !muted });
+  await post("/api/tts/mute", { mute: !muted });
 });
-stopBtn.addEventListener("click", () => defPost("/api/interrupt", {}));
+stopBtn.addEventListener("click", () => post("/api/interrupt", {}));
 
 twitchBtn.addEventListener("click", async () => {
-  try {
-    const on = twitchState === "connected" || twitchState === "connecting" || twitchState === "reconnecting";
-    await defPost("/api/twitch/irc", { enabled: !on });
-  } catch (e) {
-    hint.textContent = String(e.message || e);
-    logLine(eventLog, String(e.message || e), "warn");
-  }
+  const on = twitchState === "connected" || twitchState === "connecting" || twitchState === "reconnecting";
+  const data = await post("/api/twitch/irc", { enabled: !on });
+  if (failed(data)) logLine(eventLog, data.error, "warn");
 });
 
 eventBtn.addEventListener("click", async () => {
-  try {
-    const on = eventState === "connected" || eventState === "connecting" || eventState === "reconnecting";
-    await defPost("/api/twitch/events", { enabled: !on });
-  } catch (e) {
-    hint.textContent = String(e.message || e);
-    logLine(eventLog, String(e.message || e), "warn");
-  }
+  const on = eventState === "connected" || eventState === "connecting" || eventState === "reconnecting";
+  const data = await post("/api/twitch/events", { enabled: !on });
+  if (failed(data)) logLine(eventLog, data.error, "warn");
 });
 
 $("shoutoutBtn").addEventListener("click", async () => {
-  try {
-    await defPost("/api/twitch/shoutout", {});
-    hint.textContent = "Shoutout sent.";
-  } catch (e) {
-    hint.textContent = String(e.message || e);
-  }
+  const data = await post("/api/twitch/shoutout", {});
+  if (failed(data)) return;
+  hint.textContent = "Shoutout sent.";
 });
 
 $("markerBtn").addEventListener("click", async () => {
-  const data = await defPost("/api/marker", { note: "clip moment" });
+  const data = await post("/api/marker", { note: "clip moment" });
+  if (failed(data)) return;
   hint.textContent = data.marker_error ? `Noted. Marker: ${data.marker_error}` : "Moment noted.";
 });
 
 personaBtn.addEventListener("click", async () => {
-  const data = await defPost("/api/persona/reload", {});
+  const data = await post("/api/persona/reload", {});
+  if (failed(data)) return;
   hint.textContent = `Persona reloaded: ${data.name || "ok"}`;
   await loadPersona();
 });
 
 personaSave.addEventListener("click", async () => {
-  try {
-    const data = await defPost("/api/persona", { text: $("personaText").value });
-    hint.textContent = `Persona saved: ${data.name || "ok"}`;
-  } catch (e) {
-    hint.textContent = String(e.message || e);
-  }
+  const data = await post("/api/persona", { text: $("personaText").value });
+  if (failed(data)) return;
+  hint.textContent = `Persona saved: ${data.name || "ok"}`;
 });
 
 clearMemBtn.addEventListener("click", async () => {
-  await defPost("/api/memory/clear", {});
+  const data = await post("/api/memory/clear", {});
+  if (failed(data)) return;
   if (memLog) memLog.textContent = "";
   if (peopleList) peopleList.textContent = "";
   hint.textContent = "Conversation memory cleared.";
 });
 
 saveStreamerBtn.addEventListener("click", async () => {
-  const data = await defPost("/api/streamer", {
+  const data = await post("/api/streamer", {
     display_name: streamerName.value.trim(),
     twitch_login: streamerLogin.value.trim(),
   });
+  if (failed(data)) return;
   streamerLabel = data.spoken_name || streamerName.value.trim() || "Streamer";
   hint.textContent = `Pixel will treat ${streamerLabel} as the streamer.`;
 });
 
 $("mood").addEventListener("change", async () => {
   try {
-    await defPost("/api/mood", { mood: $("mood").value });
+    await post("/api/mood", { mood: $("mood").value });
   } catch (e) {
     hint.textContent = String(e.message || e);
   }
 });
 
 $("postVoice").addEventListener("change", () => {
-  defPost("/api/chat/post_voice", { enabled: $("postVoice").checked }).catch((e) => {
+  post("/api/chat/post_voice", { enabled: $("postVoice").checked }).catch((e) => {
     hint.textContent = String(e.message || e);
   });
 });
 
 $("sayBtn").addEventListener("click", () => speakBox(false));
 $("sayChatBtn").addEventListener("click", () => speakBox(true));
-async function speakBox(post) {
+async function speakBox(postChat) {
   const text = $("sayText").value.trim();
   if (!text) return;
-  await defPost("/api/say", { text, post_chat: post });
+  const data = await post("/api/say", { text, post_chat: postChat });
+  if (failed(data)) return;
   $("sayText").value = "";
 }
 $("pretendBtn").addEventListener("click", async () => {
   const text = $("pretendText").value.trim();
   if (!text) return;
-  await defPost("/api/pretend", { text });
+  const data = await post("/api/pretend", { text });
+  if (failed(data)) return;
   $("pretendText").value = "";
 });
 
@@ -274,14 +280,11 @@ function renderPeople(snap) {
       forget.textContent = "Forget";
       forget.addEventListener("click", async (ev) => {
         ev.stopPropagation();
-        try {
-          await defPost("/api/memory/forget", { login: p.name || "" });
-          lastPeople = lastPeople.filter((item) => item.id !== p.id);
-          if (selectedPerson === p.id) selectedPerson = "streamer";
-          renderPeople({ people: lastPeople });
-        } catch (e) {
-          if (hint) hint.textContent = String(e.message || e);
-        }
+        const data = await post("/api/memory/forget", { login: p.name || "" });
+        if (failed(data)) return;
+        lastPeople = lastPeople.filter((item) => item.id !== p.id);
+        if (selectedPerson === p.id) selectedPerson = "streamer";
+        renderPeople({ people: lastPeople });
       });
       row.appendChild(forget);
     }
@@ -430,17 +433,19 @@ function queueButtons(id) {
   drop.type = "button";
   drop.textContent = "Drop";
   drop.addEventListener("click", () => {
-    defPost("/api/queue/drop", { id }).then((data) => {
+    post("/api/queue/drop", { id }).then((data) => {
+      if (failed(data)) return;
       if (data.queue) renderQueue(data.queue);
-    }).catch((e) => { hint.textContent = String(e.message || e); });
+    });
   });
   const answer = document.createElement("button");
   answer.type = "button";
   answer.textContent = "Answer";
   answer.addEventListener("click", () => {
-    defPost("/api/queue/answer", { id }).then((data) => {
+    post("/api/queue/answer", { id }).then((data) => {
+      if (failed(data)) return;
       if (data.queue) renderQueue(data.queue);
-    }).catch((e) => { hint.textContent = String(e.message || e); });
+    });
   });
   return [drop, answer];
 }
@@ -515,6 +520,14 @@ function applyStatus(st) {
   }
   if (st.queue) renderQueue(st.queue);
   if (st.mood && document.activeElement !== $("mood")) $("mood").value = st.mood;
+  const postVoice = $("postVoice");
+  if (postVoice && document.activeElement !== postVoice && typeof st.post_voice === "boolean") {
+    postVoice.checked = st.post_voice;
+  }
+  const duckBox = $("duck");
+  if (duckBox && document.activeElement !== duckBox && typeof st.duck_enabled === "boolean") {
+    duckBox.checked = st.duck_enabled;
+  }
 }
 
 function selectedDeviceName(id) {
@@ -543,7 +556,7 @@ function applyDeviceList(devices, health) {
 function saveDevices() {
   const mic = $("micSelect").value;
   const spk = $("spkSelect").value;
-  defPost("/api/audio/devices", {
+  post("/api/audio/devices", {
     mic_device: mic === "" ? null : Number(mic),
     speaker_device: spk === "" ? null : Number(spk),
     mic_device_name: mic === "" ? null : selectedDeviceName("micSelect"),
@@ -571,13 +584,14 @@ $("refreshDevices").addEventListener("click", async () => {
 $("micSelect").addEventListener("change", saveDevices);
 $("spkSelect").addEventListener("change", saveDevices);
 $("langSelect").addEventListener("change", () => {
-  defPost("/api/stt/language", { language: $("langSelect").value }).catch((e) => { hint.textContent = String(e.message || e); });
+  post("/api/stt/language", { language: $("langSelect").value }).catch((e) => { hint.textContent = String(e.message || e); });
 });
 $("voiceSelect").addEventListener("change", () => {
   if (!$("voiceSelect").value) return;
-  defPost("/api/tts/voice", { voice: $("voiceSelect").value }).then(() => {
+  post("/api/tts/voice", { voice: $("voiceSelect").value }).then((data) => {
+    if (failed(data)) return;
     hint.textContent = "Voice updated.";
-  }).catch((e) => { hint.textContent = String(e.message || e); });
+  });
 });
 
 let vadTimer = 0;
@@ -587,7 +601,7 @@ function queueVad() {
   $("maxVal").textContent = $("maxUtter").value;
   clearTimeout(vadTimer);
   vadTimer = setTimeout(() => {
-    defPost("/api/audio/vad", {
+    post("/api/audio/vad", {
       silence_ms: Number($("silence").value),
       energy_threshold: Number($("energy").value),
       max_utterance_seconds: Number($("maxUtter").value),
@@ -598,28 +612,32 @@ $("silence").addEventListener("input", queueVad);
 $("energy").addEventListener("input", queueVad);
 $("maxUtter").addEventListener("input", queueVad);
 $("duck").addEventListener("change", async () => {
-  const data = await defPost("/api/audio/duck", { enabled: $("duck").checked });
+  const data = await post("/api/audio/duck", { enabled: $("duck").checked });
+  if (failed(data)) return;
   $("duckNote").textContent = data.note || "";
 });
 
 const profileSelect = $("profileSelect");
 if (profileSelect) {
   profileSelect.addEventListener("change", () => {
-    defPost("/api/profile", { name: profileSelect.value }).then(() => refreshHealth()).catch((e) => {
-      hint.textContent = String(e.message || e);
+    post("/api/profile", { name: profileSelect.value }).then((data) => {
+      if (failed(data)) return;
+      refreshHealth();
     });
   });
 }
 const replayBtn = $("replayBtn");
 if (replayBtn) {
   replayBtn.addEventListener("click", () => {
-    defPost("/api/queue/replay", {}).then(() => {
+    post("/api/queue/replay", {}).then((data) => {
+      if (failed(data)) return;
       hint.textContent = "Replayed the last line.";
-    }).catch((e) => { hint.textContent = String(e.message || e); });
+    });
   });
 }
 async function buildRecap(vibe) {
-  const data = await defPost("/api/recap", { vibe: !!vibe });
+  const data = await post("/api/recap", { vibe: !!vibe });
+  if (failed(data)) return data;
   const box = $("recapText");
   if (box) {
     box.value = data.markdown || "";
@@ -667,11 +685,24 @@ async function loadPersona() {
   }
 }
 
+function showReconnect(on) {
+  const banner = $("reconnectBanner");
+  if (!banner) return;
+  banner.hidden = !on;
+}
+
 function connectWs() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => showReconnect(false);
+  ws.onerror = () => showReconnect(true);
   ws.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data);
+    let msg;
+    try {
+      msg = JSON.parse(ev.data);
+    } catch {
+      return;
+    }
     if (msg.type === "status") {
       applyStatus(msg.data || {});
     } else if (msg.type === "level") {
@@ -704,7 +735,10 @@ function connectWs() {
       logLine(eventLog, String(msg.data || ""), "warn");
     }
   };
-  ws.onclose = () => setTimeout(connectWs, 1500);
+  ws.onclose = () => {
+    showReconnect(true);
+    setTimeout(connectWs, 1500);
+  };
 }
 
 refreshHealth();

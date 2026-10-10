@@ -56,6 +56,14 @@ button.primary { background: #12352f; border-color: #2a6b5f; }
 button.active { background: #2a1a12; border-color: var(--warn); color: var(--warn); }
 button.held { background: #3a2218; border-color: #ffb38a; }
 .hint { color: var(--muted); min-height: 1.4em; margin: 8px 0 0; font-size: 13px; }
+.banner {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  background: #2a1a12;
+}
 .sys { list-style: none; margin: 0; padding: 0; }
 .sys li { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid #21262d; }
 .sys span { color: var(--muted); text-align: right; }
