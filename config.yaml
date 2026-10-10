@@ -80,6 +80,7 @@ memory:
   viewers: 48
   thread_turns: 12
   catchphrase_seconds: 600
+  retention_days: 14
 
 events:
   enabled: true

@@ -71,10 +71,26 @@ function setPhase(phase) {
   phasePill.className = "phase " + (phase || "idle") + (phase === "speaking" ? " speaking-pulse" : "");
 }
 
+let controlToken = "";
+const sessionReady = (async () => {
+  try {
+    const res = await fetch("/api/session", { cache: "no-store" });
+    if (!res.ok) return;
+    const data = await res.json();
+    controlToken = data.token || "";
+  } catch {
+    /* health can still render if the session call fails */
+  }
+})();
+
 async function defPost(url, body) {
+  await sessionReady;
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Cohost-Token": controlToken,
+    },
     body: JSON.stringify(body || {}),
   });
   const data = await res.json().catch(() => ({}));
@@ -235,6 +251,8 @@ function renderPeople(snap) {
     return;
   }
   for (const p of lastPeople) {
+    const row = document.createElement("div");
+    row.className = "person-row";
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "person" + ((p.id || "") === selectedPerson ? " active" : "");
@@ -247,7 +265,26 @@ function renderPeople(snap) {
       renderThread(p);
       renderPeople(snap);
     });
-    peopleList.appendChild(btn);
+    row.appendChild(btn);
+    if (!p.is_streamer) {
+      const forget = document.createElement("button");
+      forget.type = "button";
+      forget.className = "forget";
+      forget.textContent = "Forget";
+      forget.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        try {
+          await defPost("/api/memory/forget", { login: p.name || "" });
+          lastPeople = lastPeople.filter((item) => item.id !== p.id);
+          if (selectedPerson === p.id) selectedPerson = "streamer";
+          renderPeople({ people: lastPeople });
+        } catch (e) {
+          if (hint) hint.textContent = String(e.message || e);
+        }
+      });
+      row.appendChild(forget);
+    }
+    peopleList.appendChild(row);
   }
 }
 

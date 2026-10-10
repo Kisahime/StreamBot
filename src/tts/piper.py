@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -24,6 +25,15 @@ log = logging.getLogger("cohost.tts")
 
 PIPER_ZIP = "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip"
 VOICE_REPO = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+PIPER_ZIP_SHA256 = "f3c58906402b24f3a96d92145f58acba6d86c9b5db896d207f78dc80811efcea"
+VOICE_SHA256 = {
+    "en_US-amy-medium.onnx": "b3a6e47b57b8c7fbe6a0ce2518161a50f59a9cdd8a50835c02cb02bdd6206c18",
+    "en_US-amy-medium.onnx.json": "95a23eb4d42909d38df73bb9ac7f45f597dbfcde2d1bf9526fdeaf5466977d77",
+    "en_US-kristin-medium.onnx": "5849957f929cbf720c258f8458692d6103fff2f0e3d3b19c8259474bb06a18d4",
+    "en_US-kristin-medium.onnx.json": "5681426d4aead22195de70531eeeeddb46493cfaffc5764b2ea3db73428b651c",
+    "en_US-hfc_female-medium.onnx": "914c473788fc1fa8b63ace1cdcdb44588f4ae523d3ab37df1536616835a140b7",
+    "en_US-hfc_female-medium.onnx.json": "03f1fa0622b80463283592d97aca9f6e89aec345a5c56b7257723e0093c58b6c",
+}
 
 
 def piper_voice_urls(voice: str) -> tuple[str, str]:
@@ -36,16 +46,79 @@ def piper_voice_urls(voice: str) -> tuple[str, str]:
     return f"{base}.onnx", f"{base}.onnx.json"
 
 
-def _download(url: str, dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    log.info("Downloading %s -> %s", url, dest)
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 256), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _stream_to(url: str, part: Path, on_progress) -> None:
     req = Request(url, headers={"User-Agent": "local-twitch-cohost"})
-    with urlopen(req, timeout=120) as resp, dest.open("wb") as f:
+    with urlopen(req, timeout=120) as resp, part.open("wb") as handle:
+        total = int(resp.headers.get("Content-Length") or 0)
+        got = 0
+        next_mark = 10
         while True:
             chunk = resp.read(1024 * 256)
             if not chunk:
                 break
-            f.write(chunk)
+            handle.write(chunk)
+            got += len(chunk)
+            if on_progress and total:
+                pct = int(got * 100 / total)
+                if pct >= next_mark:
+                    on_progress(f"Downloading {part.name.removesuffix('.part')} {pct}%")
+                    next_mark = pct + 10
+
+
+def _download(url: str, dest: Path, *, expected_sha256: str | None = None, on_progress=None) -> None:
+    """Download to ``dest.name.part`` and replace ``dest`` only after the file is complete."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + ".part")
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            log.info("Downloading %s -> %s", url, dest)
+            _stream_to(url, part, on_progress)
+            if expected_sha256 and _sha256(part) != expected_sha256.lower():
+                part.unlink(missing_ok=True)
+                raise RuntimeError("checksum mismatch")
+            os.replace(part, dest)
+            return
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            last_error = exc
+            log.warning("download attempt %s failed: %s", attempt + 1, exc)
+            time.sleep(0.25 * (attempt + 1))
+    raise RuntimeError(f"download failed: {last_error}")
+
+
+def _ensure_pinned_file(url: str, dest: Path, expected_sha256: str | None, on_progress=None) -> None:
+    """Leave a matching file in place. A different file on disk is a checksum mismatch."""
+    if dest.exists():
+        if expected_sha256 and _sha256(dest) != expected_sha256.lower():
+            raise RuntimeError("checksum mismatch")
+        return
+    _download(url, dest, expected_sha256=expected_sha256, on_progress=on_progress)
+
+
+def _safe_extract(zip_path: Path, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    root = dest.resolve()
+    with zipfile.ZipFile(zip_path) as archive:
+        for info in archive.infolist():
+            name = info.filename.replace("\\", "/")
+            parts = [part for part in name.split("/") if part not in ("", ".")]
+            if name.startswith("/") or ".." in parts or Path(name).is_absolute():
+                raise RuntimeError(f"unsafe zip entry: {info.filename}")
+            target = (root / name).resolve()
+            if os.path.commonpath([str(root), str(target)]) != str(root):
+                raise RuntimeError(f"unsafe zip entry: {info.filename}")
+        for info in archive.infolist():
+            archive.extract(info, dest)
 
 
 class PiperTTS:
@@ -67,6 +140,7 @@ class PiperTTS:
         self._persistent_timeout = 25.0
         self._stdout_q: queue.Queue[str] = queue.Queue()
         self._reader_gen = 0
+        self.on_progress = None
 
     @property
     def mode(self) -> str:
@@ -87,10 +161,8 @@ class PiperTTS:
                 exe = alt
             else:
                 zip_path = self.piper_dir / "piper_windows_amd64.zip"
-                if not zip_path.exists():
-                    _download(PIPER_ZIP, zip_path)
-                with zipfile.ZipFile(zip_path) as zf:
-                    zf.extractall(self.piper_dir)
+                _ensure_pinned_file(PIPER_ZIP, zip_path, PIPER_ZIP_SHA256, self.on_progress)
+                _safe_extract(zip_path, self.piper_dir)
                 if not exe.exists():
                     for p in self.piper_dir.rglob("piper.exe"):
                         exe = p
@@ -100,10 +172,8 @@ class PiperTTS:
         voice_onnx = self.piper_dir / f"{voice}.onnx"
         voice_json = self.piper_dir / f"{voice}.onnx.json"
         onnx_url, json_url = piper_voice_urls(voice)
-        if not voice_onnx.exists():
-            _download(onnx_url, voice_onnx)
-        if not voice_json.exists():
-            _download(json_url, voice_json)
+        _ensure_pinned_file(onnx_url, voice_onnx, VOICE_SHA256.get(voice_onnx.name), self.on_progress)
+        _ensure_pinned_file(json_url, voice_json, VOICE_SHA256.get(voice_json.name), self.on_progress)
         self.model = voice_onnx
         if self.exe and self.exe.exists():
             self.ready = True
