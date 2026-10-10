@@ -78,7 +78,19 @@ These are **not** the same login step. The dashboard **Connect Twitch** button s
 - Generate a **second** token while logged into **your streamer account**, with the follower + subscription scopes, and put that in `TWITCH_EVENT_TOKEN`.
 - `TWITCH_CLIENT_ID` must match the app that issued **that second token**.
 
-Chat still works if EventSub fails (wrong Client ID, missing scopes, bot token used for alerts). On the dashboard, **Twitch** = IRC, **EventSub** = alerts.
+Chat still works if EventSub fails (wrong Client ID, missing scopes, bot token used for alerts). On the dashboard, **Twitch** = IRC, **EventSub** = alerts. The Systems panel lists each feed (`ok`, `off`, or `missing scope …`). A missing scope skips that feed only.
+
+`!so` is for mods and the broadcaster. Viewers are ignored. A second shoutout inside 120 seconds is skipped locally.
+
+These optional feeds are **off** in `config.yaml`. Turn one on only when the event token includes its scope. Hype train uses EventSub version 2 (`channel.hype_train.*`); version 1 was withdrawn.
+
+| Feed | Scope |
+|---|---|
+| Bits | `bits:read` |
+| Channel points | `channel:read:redemptions` or `channel:manage:redemptions` |
+| Hype train | `channel:read:hype_train` |
+| Polls | `channel:read:polls` or `channel:manage:polls` |
+| Predictions | `channel:read:predictions` or `channel:manage:predictions` |
 
 ## On stream
 
@@ -189,9 +201,9 @@ Voice replies can be echoed to chat (`chat.post_voice_replies_to_chat`). Edit `p
 
 ## Optional, off by default
 
-In `config.yaml`: `events.bits`, `events.channel_points`, `events.hype_train`, `events.polls`, `events.predictions`, `audio.wake_word`, `audio.duck_enabled`. Wake word needs `openwakeword` and never replaces hold-to-talk. Channel-point reward titles map to `speak`, `chat`, or `ignore`.
+In `config.yaml`: `events.bits`, `events.channel_points`, `events.hype_train`, `events.polls`, `events.predictions`, `audio.wake_word`, `audio.duck_enabled`, `safety.allow_links`. Wake word needs `openwakeword` and never replaces hold-to-talk. Channel-point reward titles map to `speak`, `chat`, or `ignore`. Links are stripped from Pixel's chat posts unless `safety.allow_links` is true.
 
-`start.bat` reads `server.host` and `server.port`, skips pip when `requirements.txt` has not changed, and opens the booth unless you pass `--no-browser`. Binding anything other than localhost requires `server.allow_remote: true`.
+`start.bat` prefers `py -3.11`, then `python`, and requires 3.11 or newer. It reads `server.host` and `server.port`, skips pip when `requirements.txt` has not changed, and opens the booth unless you pass `--no-browser`. If creating the venv, installing dependencies, or reading the config fails, the window stays open and the next launch tries the install again. The install stamp is written only after pip succeeds. Binding anything other than localhost requires `server.allow_remote: true`.
 
 ## Out of scope
 

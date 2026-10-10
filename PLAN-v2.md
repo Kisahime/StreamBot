@@ -162,42 +162,42 @@ Phases:
 
 ### Phase 1: Fix what's broken
 
-- [ ] **V1-01: `!so` for mods and broadcaster only**
+- [x] **V1-01: `!so` for mods and broadcaster only**
   - *Why:* any viewer can trigger shoutouts. Fixes: N-02.
   - *Files:* `src/twitch/chat.py` (`ChatLine`, `event_message`), `src/orchestrator.py` (`_consider_chat_locked`), `src/settings.py`, `config.yaml`, tests
   - *Do:* add `is_mod: bool` and `is_broadcaster: bool` to `ChatLine`, filled from TwitchIO's `message.author.is_mod` and `is_broadcaster` (or `badges`). Add `chat.mod_commands: ["!so"]`. A non-mod using a mod command is dropped with skip reason `not a mod`. Add a 120 s local cooldown on shoutouts and log Helix 429 responses clearly.
   - *Acceptance:* unit test: a viewer `!so bob` → no `shoutout()` call; a mod `!so bob` → one call; a second within 120 s → skipped with a reason. The dashboard button still works.
   - *Depends on:* V0-02
 
-- [ ] **V1-02: Fix EventSub subscription versions and the welcome-window race**
+- [x] **V1-02: Fix EventSub subscription versions and the welcome-window race**
   - *Why:* hype train never subscribes, and predictions sometimes miss the session. Fixes: N-03.
   - *Files:* `src/settings.py` (`event_subscriptions`), `src/twitch/eventsub.py` (`_subscribe_all`), tests
   - *Do:* check each type and version against the current Twitch EventSub reference, and set `channel.hype_train.*` to the version Twitch accepts (your log rejects `"2"`; try `"1"`). Resolve broadcaster and moderator IDs **once at connect, before** opening the WebSocket, and cache them so the welcome handler only POSTs subscriptions. Limit concurrency (for example `asyncio.Semaphore(4)`) and subscribe the core five first.
   - *Acceptance:* with all optional feeds on and the right scopes, connecting shows no `invalid subscription type and version` or `session has already disconnected` in the log. Unit test that `event_subscriptions()` returns the expected (type, version) pairs.
   - *Depends on:* none
 
-- [ ] **V1-03: Show subscription and scope status per feed**
+- [x] **V1-03: Show subscription and scope status per feed**
   - *Why:* partial failures look like "connected". Fixes: N-04.
   - *Files:* create `src/twitch/auth.py`; edit `src/twitch/eventsub.py`, `src/orchestrator.py`, `src/health.py`, `src/web/static/app.js`, `index.html`, `config.yaml`, `README.md`
   - *Do:* `validate(token)` calls `GET https://id.twitch.tv/oauth2/validate` and returns `login`, `client_id`, `scopes` and `expires_in`, **never** the token. Map each feed to its required scope (see N-04) and skip subscribing when the scope is missing, with a clear reason. Store per-subscription results (`ok`, `missing scope`, `HTTP 400 …`) on the client and add them to `/api/health` under `twitch.feeds`. Show a small feed list in the Systems panel and a hint when a token expires in under 24 h. Set the five optional feeds in `config.yaml` back to `false` (matching the comment) or update the comment.
   - *Acceptance:* with a token lacking `bits:read`, the dashboard shows `bits: missing scope bits:read` and alerts still connect. A test asserts the health JSON contains no token value and no `oauth:` string.
   - *Depends on:* V1-02
 
-- [ ] **V1-04: Drain Piper's pipes and read WAVs safely**
+- [x] **V1-04: Drain Piper's pipes and read WAVs safely**
   - *Why:* the long-lived Piper can stall and then stays slow for the session. Fixes: N-05.
   - *Files:* `src/tts/piper.py`, tests
   - *Do:* start two daemon reader threads per process that read `stdout` and `stderr` line by line (log stderr at DEBUG, and use the stdout "output file" line as the "WAV is complete" signal instead of polling file size). Or send stderr to `DEVNULL`. On a persistent failure, retry the persistent mode once after 60 s instead of disabling it forever. Expose `tts.mode` (`persistent`/`oneshot`) in health.
   - *Acceptance:* a 200-sentence soak (a script calling `speak` in a loop with mute on and playback stubbed) stays in `persistent` mode, with a steady time per sentence. Unit test with a fake `Popen` whose stdout and stderr produce output confirms no deadlock.
   - *Depends on:* V0-02
 
-- [ ] **V1-05: Output guard for everything Pixel posts**
+- [x] **V1-05: Output guard for everything Pixel posts**
   - *Why:* Pixel can post `!`/`/` commands and links, and chat text is cut mid-word. Fixes: N-06.
   - *Files:* `src/safety.py` (add `clean_chat_output`), `src/orchestrator.py` (every `twitch.send` path: `_emit_cohost`, `say_line`, `_emit_voice_result`, `_decide_chat`), `src/sentences.py` (reuse `cap_sentence`), tests
   - *Do:* `clean_chat_output(text, target_user=None)` strips leading `!`, `/`, `.` and `\`, removes URLs (unless `safety.allow_links: true`), removes @-mentions other than the target, and caps on a word boundary with `cap_sentence(text, chat_max_chars)`. Return `""` if nothing meaningful is left, and skip with reason `output guard`. Route all five `[: chat_max_chars]` cuts through it.
   - *Acceptance:* unit tests: `"!addcom x"` → `"addcom x"`, `"/ban bob"` → `"ban bob"`, a URL is removed, and a 300-character reply ends on a whole word. The dashboard **Say** still posts what you typed, minus a leading `/`.
   - *Depends on:* V0-02
 
-- [ ] **V1-06: `start.bat` that fails loudly and retries installs**
+- [x] **V1-06: `start.bat` that fails loudly and retries installs**
   - *Why:* failed installs are stamped as done and errors vanish. Fixes: N-07.
   - *Files:* `start.bat`, `README.md`
   - *Do:* prefer `py -3.11`, falling back to `python`, and check the version is ≥ 3.11. Check `errorlevel` after `venv`, `pip install` and the settings probe, writing the stamp **only after a successful install**. On any error, `echo` a clear message and `pause`. Drop `pip install --upgrade pip` from normal runs. Pass `--no-browser` through unchanged.

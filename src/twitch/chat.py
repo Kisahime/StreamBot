@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 from twitchio.ext import commands
 
@@ -31,6 +32,8 @@ class ChatLine:
     at: datetime = field(default_factory=lambda: datetime.now(UTC))
     mention: bool = False
     command: str = ""
+    is_mod: bool = False
+    is_broadcaster: bool = False
 
     def render(self) -> str:
         return f"{self.user}: {self.text}"
@@ -56,6 +59,23 @@ def looks_like_auth_failure(text: str) -> bool:
         token in low
         for token in ("login unsuccessful", "authentication", "invalid token", "oauth", "401", "403", "improperly formatted auth")
     )
+
+
+def author_flags(author: Any) -> tuple[bool, bool]:
+    """Mod and broadcaster flags from TwitchIO, with a badge fallback."""
+    if author is None:
+        return False, False
+    is_mod = bool(getattr(author, "is_mod", False))
+    is_broadcaster = bool(getattr(author, "is_broadcaster", False))
+    badges = getattr(author, "badges", None)
+    names: set[str] = set()
+    if isinstance(badges, dict):
+        names = {str(name).lower() for name in badges}
+    elif isinstance(badges, (list, tuple, set)):
+        names = {str(name).lower() for name in badges}
+    is_mod = is_mod or "moderator" in names
+    is_broadcaster = is_broadcaster or "broadcaster" in names
+    return is_mod, is_broadcaster
 
 
 def is_spammy(text: str) -> bool:
@@ -159,7 +179,15 @@ class TwitchChat:
                 elif is_spammy(content):
                     return
                 mention = any(n in content.lower() for n in parent.bot_names)
-                line = ChatLine(user=author, text=content, mention=mention, command=command)
+                is_mod, is_broadcaster = author_flags(message.author)
+                line = ChatLine(
+                    user=author,
+                    text=content,
+                    mention=mention,
+                    command=command,
+                    is_mod=is_mod,
+                    is_broadcaster=is_broadcaster,
+                )
                 parent.buffer.append(line)
                 await parent.on_line(line)
 
