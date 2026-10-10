@@ -22,7 +22,7 @@ def test_start_bat_fails_loudly_and_stamps_only_after_pip():
 def test_shipped_config_keeps_optional_feeds_off():
     from src.settings import load_settings
 
-    settings = load_settings()
+    settings = load_settings(Path(__file__).resolve().parents[1] / "config.yaml")
     assert settings.bits_enabled is False
     assert settings.channel_points_enabled is False
     assert settings.hype_train_enabled is False

@@ -150,6 +150,24 @@ def fake_twitch_env(monkeypatch: pytest.MonkeyPatch) -> None:
         }
 
     monkeypatch.setattr("src.twitch.auth.validate", _offline_validate)
+    monkeypatch.setenv("COHOST_SKIP_SECRET_CHECK", "1")
+
+
+@pytest.fixture(autouse=True)
+def isolated_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point repo-root file reads at a temp tree so tests do not need the real config."""
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "logs").mkdir()
+    (root / "data").mkdir()
+    (root / "persona.yaml").write_text(PERSONA_FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+    (root / "config.yaml").write_text(
+        "server:\n  host: 127.0.0.1\n  port: 8080\n  allow_remote: false\n",
+        encoding="utf-8",
+    )
+    for name, module in list(sys.modules.items()):
+        if (name == "src" or name.startswith("src.")) and hasattr(module, "ROOT"):
+            monkeypatch.setattr(module, "ROOT", root)
 
 
 @pytest.fixture

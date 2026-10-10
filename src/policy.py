@@ -6,9 +6,23 @@ SPEAK_COMMANDS = {"!pixel", "!ask"}
 CONTROL_VERBS = {"mute", "unmute", "chill", "hype", "stop"}
 
 
-def pixel_control(line: ChatLine) -> str:
-    """Return a ``!pixel`` steering verb, or empty when this line is not one."""
-    if (line.command or "").lower() != "!pixel":
+def control_command_names(persona_name: str = "", configured: str = "") -> set[str]:
+    """Commands that steer the booth. ``!pixel`` stays available as an alias."""
+    names = {"!pixel"}
+    raw = (configured or "").strip().lower()
+    if raw:
+        names.add(raw if raw.startswith("!") else f"!{raw}")
+        return names
+    first = (persona_name or "").strip().lower().split()
+    if first and first[0]:
+        names.add(f"!{first[0]}")
+    return names
+
+
+def pixel_control(line: ChatLine, commands: set[str] | None = None) -> str:
+    """Return a steering verb, or empty when this line is not a control command."""
+    allowed = commands or {"!pixel"}
+    if (line.command or "").lower() not in allowed:
         return ""
     parts = (line.text or "").split()
     if len(parts) < 2:

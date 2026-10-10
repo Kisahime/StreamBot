@@ -140,3 +140,72 @@ def test_persistent_mode_retries_after_the_delay(tmp_path, settings):
         assert int(audio.size) > 0
     finally:
         tts.close()
+
+
+LATE_STUB = """\
+import json
+import sys
+import time
+import wave
+
+signal = sys.argv[1]
+line = sys.stdin.buffer.readline()
+if not line:
+    sys.exit(0)
+req = json.loads(line.decode())
+path = req["output_file"]
+open(signal, "w", encoding="utf-8").write(path)
+time.sleep(0.5)
+
+def write(target):
+    with wave.open(target, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(22050)
+        wf.writeframes(b"\\x00\\x10" * 40)
+    sys.stdout.buffer.write((target + "\\n").encode())
+    sys.stdout.buffer.flush()
+
+write(path)
+line = sys.stdin.buffer.readline()
+if not line:
+    sys.exit(0)
+write(json.loads(line.decode())["output_file"])
+"""
+
+
+def test_interrupt_then_next_synth_removes_the_late_wav(tmp_path, settings):
+    script = tmp_path / "late_piper.py"
+    script.write_text(LATE_STUB, encoding="utf-8")
+    signal = tmp_path / "started.txt"
+    tts = _ready(settings, tmp_path)
+    tts._persistent_timeout = 3
+    tts._spawn = lambda: _popen(script, str(signal))
+    held: dict = {}
+
+    def first() -> None:
+        held["first"] = tts._synth("hello", tts._gen)
+
+    thread = threading.Thread(target=first)
+    thread.start()
+    for _ in range(50):
+        if signal.exists():
+            break
+        time.sleep(0.02)
+    assert signal.exists()
+    abandoned = Path(signal.read_text(encoding="utf-8"))
+    tts.interrupt()
+    thread.join(3)
+    assert thread.is_alive() is False
+    assert str(abandoned) in tts._pending_deletes or not abandoned.exists()
+
+    def second() -> None:
+        held["second"] = tts._synth("again", tts._gen)
+
+    follow = threading.Thread(target=second)
+    follow.start()
+    follow.join(3)
+    tts.close()
+    assert follow.is_alive() is False
+    assert not abandoned.exists()
+    assert int(held["second"][0].size) > 0

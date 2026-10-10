@@ -143,49 +143,49 @@ Do these on a test stream or with the booth open before relying on the features.
 
 ### Phase 2: Robustness and code health
 
-- [ ] **V3-P2-01 🟡 Atomic writes for booth and identity** (F-08)
+- [x] **V3-P2-01 🟡 Atomic writes for booth and identity** (F-08)
   - *Do:* use `atomic_write_text()` in `save_booth()` and `save_identity()`; log (don't swallow silently) a corrupt file and keep a `.bad` copy like memory does.
   - *Files:* `src/booth.py`, `src/identity.py`, tests
   - *Acceptance:* a test that makes `os.replace` raise leaves the old file intact; a corrupt `booth.json` is logged and copied to `booth.json.bad`.
   - *Depends on:* none
 
-- [ ] **V3-P2-02 🟡 Clean up Piper temp files after interrupts** (F-10)
+- [x] **V3-P2-02 🟡 Clean up Piper temp files after interrupts** (F-10)
   - *Do:* when a persistent request is abandoned, record its `out_path` in a "pending deletes" set; delete it when its ready-line arrives or on the next synth/close. Optionally write temps into `data/tmp/` and clear that folder on start.
   - *Files:* `src/tts/piper.py`, `tests/test_piper_pipes.py`
   - *Acceptance:* a fake Piper that writes the file after the interrupt leaves no stray WAVs after the next synth.
   - *Depends on:* none
 
-- [ ] **V3-P2-03 🟡 Keep the manual mood across restarts** (F-11)
+- [x] **V3-P2-03 🟡 Keep the manual mood across restarts** (F-11)
   - *Do:* store `mood_override` separately in `BoothState`; profiles set the base mood, and a manual change sets the override until the next profile switch.
   - *Files:* `src/booth.py`, `src/orchestrator.py`, `tests/test_phase4.py`
   - *Acceptance:* profile "Focus game" + manual `hype` → restart → mood is still `hype`; switching profile clears the override.
   - *Depends on:* V3-P2-01
 
-- [ ] **V3-P2-04 🟡 Better shoutout lines** (F-12)
+- [x] **V3-P2-04 🟡 Better shoutout lines** (F-12)
   - *Do:* say "go check out X" style lines (configurable `chat.shoutout_line`, with `{user}`), use "welcome in" only when the target is the last raider, and let `chat.shoutout_speak` (default true) control TTS.
   - *Files:* `src/orchestrator.py`, `src/settings.py`, `config.yaml`, `tests/test_shoutout.py`
   - *Acceptance:* `!so friend` with no raid posts the configured line; a raider shoutout keeps the welcome; with `shoutout_speak: false` nothing is spoken.
   - *Depends on:* V3-P1-02
 
-- [ ] **V3-P2-05 🟡 Remove hardcoded "Pixel"** (F-13)
+- [x] **V3-P2-05 🟡 Remove hardcoded "Pixel"** (F-13)
   - *Do:* derive the control command from the persona name (`!<name lowercase>`) and keep `!pixel` as an alias via `chat.control_command`; use `personaName` in the dashboard hint; pass the persona name into the smalltalk fallback everywhere.
   - *Files:* `src/policy.py`, `src/orchestrator.py`, `src/settings.py`, `src/web/static/app.js`, `config.yaml`, tests
   - *Acceptance:* with `name: Nova` and `control_command` unset, `!nova mute` works and `!pixel mute` still works; no user-visible "Pixel" remains in the UI when the persona is renamed.
   - *Depends on:* none
 
-- [ ] **V3-P2-06 🟡 Split the orchestrator** (F-15)
+- [x] **V3-P2-06 🟡 Split the orchestrator** (F-15)
   - *Do:* move code without changing behaviour into `src/core/chat_flow.py` (pick/rate/decide/perform), `src/core/event_flow.py` (batching, priority, react), `src/core/voice_flow.py` (utterance → reply), `src/core/twitch_link.py` (connect/disconnect/watchdog) and `src/core/queue.py`. Keep `Orchestrator` as a thin façade so `main.py` and tests don't change.
   - *Files:* `src/orchestrator.py`, new `src/core/*`
   - *Acceptance:* all existing tests pass unchanged; `orchestrator.py` is under 500 lines; ruff clean.
   - *Depends on:* Phase 1 done (to avoid merge pain)
 
-- [ ] **V3-P2-07 🟡 Hermetic tests and a coverage floor** (F-16)
+- [x] **V3-P2-07 🟡 Hermetic tests and a coverage floor** (F-16)
   - *Do:* make `conftest.py` set `COHOST_SKIP_SECRET_CHECK=1`, point `ROOT`-based paths at `tmp_path` via a fixture, and never read the real `config.yaml`/`persona.yaml`. Add `--cov=src --cov-fail-under=<current-2>` to CI.
   - *Files:* `tests/conftest.py`, `.github/workflows/ci.yml`, `pyproject.toml`
   - *Acceptance:* tests pass with a deliberately broken `config.yaml` in the repo root; CI fails if coverage drops.
   - *Depends on:* V3-P1-01
 
-- [ ] **V3-P2-08 🟡 Configurable logging** (F-17)
+- [x] **V3-P2-08 🟡 Configurable logging** (F-17)
   - *Do:* add `logging.level` (default INFO) and `logging.debug_modules` (e.g. `["cohost.mic","cohost.tts"]`), and a dashboard "Debug log for 10 min" toggle (token-protected POST).
   - *Files:* `src/logsetup.py`, `src/settings.py`, `config.yaml`, `src/main.py`, `src/web/static/*`
   - *Acceptance:* setting `debug_modules: [cohost.mic]` produces mic debug lines only; the toggle reverts after 10 minutes.

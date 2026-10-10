@@ -394,10 +394,63 @@ def test_phase4_routes(tmp_path, settings):
         assert missing.status_code == 400
 
 
+def test_manual_mood_survives_restart_until_the_next_profile(tmp_path, settings):
+    settings.profiles = {
+        "Focus game": {
+            "mood": "chill",
+            "cooldown_seconds": 30,
+            "per_user_cooldown_seconds": 45,
+            "events_speak": False,
+            "post_voice_replies_to_chat": False,
+            "max_replies_per_minute": 3,
+        }
+    }
+
+    async def run():
+        orch = make_orch(tmp_path, settings)
+        await orch.apply_profile("Focus game")
+        assert orch.mood == "chill"
+        await orch.set_mood("hype")
+        assert orch.mood == "hype"
+        restarted = make_orch(tmp_path, settings)
+        assert restarted.profile_name == "Focus game"
+        assert restarted.mood == "hype"
+        await restarted.apply_profile("Focus game")
+        assert restarted.mood == "chill"
+        assert restarted.mood_override == ""
+
+    asyncio.run(run())
+
+
+def test_persona_name_is_a_control_command_and_pixel_stays(tmp_path, settings):
+    async def run():
+        settings.control_cooldown_seconds = 0
+        orch = make_orch(tmp_path, settings)
+        orch.persona["name"] = "Nova"
+        settings.control_command = ""
+        viewer = ChatLine(user="bob", text="!nova mute", command="!nova")
+        orch._chat_pending.append(viewer)
+        assert await orch._consider_chat_locked() is True
+        assert orch._last_skip["reason"] == "not a mod"
+
+        mod = ChatLine(user="moddy", text="!nova mute", command="!nova", is_mod=True)
+        orch._chat_pending.append(mod)
+        assert await orch._consider_chat_locked() is True
+        assert orch.tts_mute is True
+        assert "Muted." in orch.twitch.sent
+
+        pixel = ChatLine(user="moddy", text="!pixel unmute", command="!pixel", is_mod=True)
+        orch._chat_pending.append(pixel)
+        assert await orch._consider_chat_locked() is True
+        assert orch.tts_mute is False
+
+    asyncio.run(run())
+
+
 def test_shipped_config_and_overlay_hooks():
     from pathlib import Path
 
-    loaded = load_settings()
+    loaded = load_settings(Path(__file__).resolve().parents[1] / "config.yaml")
     assert loaded.reward_action("hydrate") == "speak"
     assert loaded.welcome_first_time is True
     assert loaded.profiles["Focus game"]["mood"] == "chill"
