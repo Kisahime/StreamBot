@@ -97,6 +97,18 @@ class ForgetBody(BaseModel):
     login: str = ""
 
 
+class IdBody(BaseModel):
+    id: str = ""
+
+
+class ProfileBody(BaseModel):
+    name: str = ""
+
+
+class RecapBody(BaseModel):
+    vibe: bool = False
+
+
 def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> FastAPI:
     @asynccontextmanager
     async def life(app: FastAPI):
@@ -159,6 +171,40 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
     @app.get("/api/queue")
     async def queue():
         return app.state.orch.queue_snapshot()
+
+    @app.post("/api/queue/drop")
+    async def queue_drop(body: IdBody):
+        ok = await app.state.orch.drop_queued(body.id)
+        if not ok:
+            return JSONResponse({"ok": False, "error": "not in queue"}, status_code=404)
+        return {"ok": True, "queue": app.state.orch.queue_snapshot()}
+
+    @app.post("/api/queue/answer")
+    async def queue_answer(body: IdBody):
+        ok = await app.state.orch.answer_queued(body.id)
+        if not ok:
+            return JSONResponse({"ok": False, "error": "not in queue"}, status_code=404)
+        return {"ok": True, "queue": app.state.orch.queue_snapshot()}
+
+    @app.post("/api/queue/replay")
+    async def queue_replay():
+        ok = await app.state.orch.replay_last()
+        if not ok:
+            return JSONResponse({"ok": False, "error": "nothing to replay"}, status_code=400)
+        return {"ok": True}
+
+    @app.post("/api/recap")
+    async def recap(body: RecapBody):
+        result = await app.state.orch.make_recap(vibe=body.vibe)
+        return {"ok": True, **result}
+
+    @app.post("/api/profile")
+    async def profile(body: ProfileBody):
+        try:
+            name = await app.state.orch.apply_profile(body.name)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        return {"ok": True, "profile": name}
 
     @app.post("/api/listen")
     async def listen(body: ListenBody):

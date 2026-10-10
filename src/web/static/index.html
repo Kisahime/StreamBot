@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Local Twitch Cohost</title>
-  <link rel="stylesheet" href="/static/app.css?v=9" />
+  <link rel="stylesheet" href="/static/app.css?v=10" />
 </head>
 <body>
   <div class="app">
@@ -36,6 +36,12 @@
             <option value="hype">hype</option>
           </select>
         </label>
+        <label class="field">Profile
+          <select id="profileSelect">
+            <option value="">config defaults</option>
+          </select>
+        </label>
+        <p class="hint" id="profileLine"></p>
         <label class="check"><input id="postVoice" type="checkbox" checked /> Post voice replies to chat</label>
         <h2 class="dev-title">Streamer</h2>
         <label class="field">Display name
@@ -110,6 +116,9 @@
       <article class="panel">
         <h2>Queue</h2>
         <div id="queueLog" class="log"></div>
+        <div class="row">
+          <button id="replayBtn" type="button">Replay last line</button>
+        </div>
         <p class="hint" id="skipLine"></p>
       </article>
     </section>
@@ -165,11 +174,21 @@
       </div>
     </section>
 
+    <section class="panel">
+      <h2>Recap</h2>
+      <textarea id="recapText" class="persona" readonly spellcheck="false" placeholder="Build a recap from this session."></textarea>
+      <div class="row">
+        <button id="recapBtn" type="button">Build recap</button>
+        <button id="recapVibeBtn" type="button">Add vibe</button>
+        <button id="recapCopy" type="button">Copy</button>
+      </div>
+    </section>
+
     <section class="panel log-card">
       <h2>Log</h2>
       <div id="eventLog" class="log"></div>
     </section>
   </div>
-  <script src="/static/app.js?v=12"></script>
+  <script src="/static/app.js?v=13"></script>
 </body>
 </html>

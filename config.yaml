@@ -89,6 +89,10 @@ chat:
   shoutout_cooldown_seconds: 120
   # Pending viewer lines older than this are dropped (streamer lines and commands stay).
   max_age_seconds: 45
+  # First-time chatters get a short typed welcome instead of a spoken reply.
+  welcome_first_time: true
+  # Gap between mod !pixel mute/unmute/chill/hype/stop commands.
+  control_cooldown_seconds: 4
 
 memory:
   chat_context_lines: 20
@@ -112,6 +116,11 @@ events:
   predictions: false
   channel_point_rewards:
     hydrate: speak
+    # A reward can also be a mapping. {user} and {input} are filled in, and input is fenced.
+    # "roast me":
+    #   action: speak
+    #   prompt: "Playfully roast {user} in one line, nothing mean about looks. They wrote: {input}"
+    #   cooldown: 120
 
 overlay:
   alert_hold_seconds: 6
@@ -119,3 +128,20 @@ overlay:
 safety:
   # Pixel strips links from chat posts unless this is true.
   allow_links: false
+
+# Named booth presets. POST /api/profile applies one and stores the name in data/booth.json.
+profiles:
+  "Just chatting":
+    mood: hype
+    cooldown_seconds: 8
+    per_user_cooldown_seconds: 12
+    events.speak: true
+    post_voice_replies_to_chat: true
+    max_replies_per_minute: 12
+  "Focus game":
+    mood: chill
+    cooldown_seconds: 30
+    per_user_cooldown_seconds: 45
+    events.speak: false
+    post_voice_replies_to_chat: false
+    max_replies_per_minute: 3

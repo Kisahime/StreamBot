@@ -11,6 +11,7 @@ class BoothState:
     tts_mute: bool = False
     post_voice_replies_to_chat: bool = True
     mood: str = "normal"
+    profile: str = ""
 
     def clamped(self) -> BoothState:
         if self.mood not in ("chill", "normal", "hype"):
@@ -29,6 +30,7 @@ def load_booth(path: Path, fallback_mute: bool = False, fallback_post: bool = Tr
                 data.get("post_voice_replies_to_chat", state.post_voice_replies_to_chat)
             )
             state.mood = str(data.get("mood") or state.mood)
+            state.profile = str(data.get("profile") or "")
         except Exception:
             pass
     return state.clamped()

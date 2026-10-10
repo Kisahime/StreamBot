@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 QUALITY_MODEL = "qwen2.5:7b-instruct-q4_K_M"
 SNAPPY_MODEL = "qwen2.5:3b"
 WHISPER_LANGUAGES = ("en", "es", "fr", "de", "pt", "ja")
+REWARD_ACTIONS = ("speak", "chat", "ignore")
 
 
 def _command_list(data: dict[str, Any], path: str, default: list[str]) -> list[str]:
@@ -26,6 +27,67 @@ def _command_list(data: dict[str, Any], path: str, default: list[str]) -> list[s
             text = "!" + text
         commands.append(text)
     return commands
+
+
+class RewardSpec:
+    """How one channel-point reward should be delivered."""
+
+    def __init__(self, action: str, prompt: str = "", cooldown: float = 0.0) -> None:
+        cleaned = (action or "").strip().lower()
+        self.action = cleaned if cleaned in REWARD_ACTIONS else "ignore"
+        self.prompt = prompt or ""
+        try:
+            self.cooldown = max(0.0, float(cooldown or 0))
+        except (TypeError, ValueError):
+            self.cooldown = 0.0
+
+
+def _reward_spec(value: Any) -> RewardSpec:
+    if isinstance(value, RewardSpec):
+        return value
+    if isinstance(value, str):
+        return RewardSpec(value.strip().lower())
+    if isinstance(value, dict):
+        try:
+            cooldown = float(value.get("cooldown") or 0)
+        except (TypeError, ValueError):
+            cooldown = 0.0
+        return RewardSpec(
+            str(value.get("action") or "ignore"),
+            str(value.get("prompt") or ""),
+            cooldown,
+        )
+    return RewardSpec("ignore")
+
+
+def _parse_profiles(raw: Any) -> dict[str, dict[str, Any]]:
+    """Named overrides for the runtime keys a profile is allowed to change."""
+    if not isinstance(raw, dict):
+        return {}
+    profiles: dict[str, dict[str, Any]] = {}
+    for name, body in raw.items():
+        if not isinstance(body, dict):
+            continue
+        spec: dict[str, Any] = {}
+        if "mood" in body:
+            spec["mood"] = str(body.get("mood") or "normal").strip().lower()
+        if "cooldown_seconds" in body:
+            spec["cooldown_seconds"] = float(body.get("cooldown_seconds") or 0)
+        if "per_user_cooldown_seconds" in body:
+            spec["per_user_cooldown_seconds"] = float(body.get("per_user_cooldown_seconds") or 0)
+        events = body.get("events")
+        if "events.speak" in body:
+            spec["events_speak"] = bool(body.get("events.speak"))
+        elif isinstance(events, dict) and "speak" in events:
+            spec["events_speak"] = bool(events.get("speak"))
+        elif "events_speak" in body:
+            spec["events_speak"] = bool(body.get("events_speak"))
+        if "post_voice_replies_to_chat" in body:
+            spec["post_voice_replies_to_chat"] = bool(body.get("post_voice_replies_to_chat"))
+        if "max_replies_per_minute" in body:
+            spec["max_replies_per_minute"] = int(body.get("max_replies_per_minute") or 0)
+        profiles[str(name)] = spec
+    return profiles
 
 
 def _get(data: dict[str, Any], path: str, default: Any = None) -> Any:
@@ -123,6 +185,8 @@ class Settings:
         self.mod_commands = _command_list(data, "chat.mod_commands", ["!so"])
         self.shoutout_cooldown_seconds = float(_get(data, "chat.shoutout_cooldown_seconds", 120))
         self.chat_max_age_seconds = float(_get(data, "chat.max_age_seconds", 45))
+        self.welcome_first_time = bool(_get(data, "chat.welcome_first_time", False))
+        self.control_cooldown_seconds = float(_get(data, "chat.control_cooldown_seconds", 4))
         self.ambient_chat_context = int(_get(data, "chat.ambient_context_lines", 6))
         self.allow_links = bool(_get(data, "safety.allow_links", False))
 
@@ -144,7 +208,12 @@ class Settings:
         self.polls_enabled = bool(_get(data, "events.polls", False))
         self.predictions_enabled = bool(_get(data, "events.predictions", False))
         rewards = _get(data, "events.channel_point_rewards", {}) or {}
-        self.channel_point_rewards = {str(k).lower(): str(v).lower() for k, v in rewards.items()}
+        self.channel_point_rewards = {
+            str(key).strip().lower(): _reward_spec(value)
+            for key, value in rewards.items()
+            if str(key).strip()
+        }
+        self.profiles = _parse_profiles(_get(data, "profiles", {}) or {})
 
         self.overlay_alert_hold = float(_get(data, "overlay.alert_hold_seconds", 6))
 
@@ -186,11 +255,11 @@ class Settings:
         self.twitch_client_id = os.getenv("TWITCH_CLIENT_ID", "").strip()
         self.twitch_event_token = os.getenv("TWITCH_EVENT_TOKEN", "").strip()
 
+    def reward_spec(self, title: str) -> RewardSpec:
+        return self.channel_point_rewards.get((title or "").strip().lower(), RewardSpec("ignore"))
+
     def reward_action(self, title: str) -> str:
-        action = self.channel_point_rewards.get((title or "").strip().lower(), "ignore")
-        if action not in ("speak", "chat", "ignore"):
-            return "ignore"
-        return action
+        return self.reward_spec(title).action
 
     def event_subscriptions(self) -> list[tuple[str, str]]:
         subs = [

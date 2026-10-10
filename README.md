@@ -102,7 +102,9 @@ These optional feeds are **off** in `config.yaml`. Turn one on only when the eve
    - Width ~1280, height ~300
    - Enable **Shutdown source when not visible** off while live
    - Enable **Transparent background** (Custom CSS can be `body { background-color: rgba(0,0,0,0); margin: 0; }`)
-   - Optional query: `?theme=minimal&position=bottom&hide=idle&hold=6` (`position` can be `top` or `center`)
+   - Optional query: `?theme=minimal&position=bottom&hide=idle&hold=6&alerts=1&fontsize=32` (`position` can be `top` or `center`)
+   - `?alerts=0` hides alert banners. `?fontsize=32` sets the caption size in pixels.
+   - Each alert kind (raid, follow, sub, and the rest) has its own color. The banner fades in, and the caption types out while Pixel is speaking. Both animations turn off when the browser asks for reduced motion.
 
 Pixel's spoken audio can go to a virtual cable (VB-Audio, VoiceMeeter). The device list labels those outputs; pick one in the booth. The default output is not changed until you pick it.
 

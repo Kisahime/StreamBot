@@ -36,6 +36,8 @@ class ChatLine:
     is_mod: bool = False
     is_broadcaster: bool = False
     ts: float = field(default_factory=time.monotonic)
+    id: str = ""
+    first_msg: bool = False
 
     def render(self) -> str:
         return f"{self.user}: {self.text}"
@@ -69,6 +71,17 @@ def looks_like_auth_failure(text: str) -> bool:
         token in low
         for token in ("login unsuccessful", "authentication", "invalid token", "oauth", "401", "403", "improperly formatted auth")
     )
+
+
+def message_is_first(message: Any) -> bool:
+    """True when Twitch marks this as the chatter's first message in the channel."""
+    if bool(getattr(message, "first", False)):
+        return True
+    tags = getattr(message, "tags", None)
+    if isinstance(tags, dict):
+        raw = tags.get("first-msg", tags.get("first_msg"))
+        return str(raw).strip() in {"1", "true", "True"}
+    return False
 
 
 def author_flags(author: Any) -> tuple[bool, bool]:
@@ -197,6 +210,7 @@ class TwitchChat:
                     command=command,
                     is_mod=is_mod,
                     is_broadcaster=is_broadcaster,
+                    first_msg=message_is_first(message),
                 )
                 parent.buffer.append(line)
                 await parent.on_line(line)
