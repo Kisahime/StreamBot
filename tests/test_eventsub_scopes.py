@@ -227,3 +227,132 @@ def test_health_hides_tokens_and_reports_feeds(tmp_path, settings):
     assert payload["twitch"]["feeds"]["raid"] == "off"
     assert payload["tts"]["mode"] == "persistent"
     assert any("under 24 hours" in hint for hint in payload["setup"])
+
+
+def test_expiry_hint_uses_time_since_validation(tmp_path, settings):
+    import time
+
+    from tests.test_orchestrator_policy import make_orch
+
+    class _Wake:
+        def status(self):
+            return {"enabled": False}
+
+    class _EventSub:
+        def __init__(self):
+            self.feed_status = {}
+            self.expires_in = 48 * 60 * 60
+            self.validated_at = time.time() - 30 * 60 * 60
+            self.scopes: set[str] = set()
+
+    async def run(client):
+        orch = make_orch(tmp_path, settings)
+        orch.mic.wake = _Wake()
+        orch.eventsub = client
+        return await snapshot(settings, orch)
+
+    client = _EventSub()
+    payload = asyncio.run(run(client))
+    assert any("under 24 hours" in hint for hint in payload["setup"])
+    assert payload["twitch"]["actions"]["shoutout"] == "missing scope moderator:manage:shoutouts"
+    assert payload["twitch"]["actions"]["marker"] == "missing scope channel:manage:broadcast"
+
+    client.validated_at = time.time()
+    client.scopes = {"moderator:manage:shoutouts", "channel:manage:broadcast"}
+    fresh = asyncio.run(run(client))
+    assert not any("under 24 hours" in hint for hint in fresh["setup"])
+    assert fresh["twitch"]["actions"]["shoutout"] == "ok"
+    assert fresh["twitch"]["actions"]["marker"] == "ok"
+
+
+def test_revalidate_401_rejects_the_event_token(tmp_path, settings, monkeypatch):
+    from src.twitch.eventsub import EventSubClient
+    from tests.test_orchestrator_policy import make_orch
+
+    async def rejected(token, client=None):
+        raise RuntimeError("token validate HTTP 401: nope")
+
+    async def run():
+        orch = make_orch(tmp_path, settings)
+        client = EventSubClient("oauth:tok", "cid", "chan", _quiet, orch._eventsub_status)
+        client.connected = True
+        orch.eventsub = client
+        monkeypatch.setattr("src.twitch.auth.validate", rejected)
+        await orch._revalidate_event_token()
+        assert client.fatal is True
+        assert orch.hub.status.get("eventsub") == "token rejected"
+
+        calls: list[str] = []
+
+        async def mark():
+            calls.append("checked")
+            orch._stopping = True
+
+        orch._stopping = False
+        orch._revalidate_event_token = mark
+        orch._want_events = True
+        orch._token_check_at = 0.0
+        orch.eventsub = client
+
+        async def asleep(_delay):
+            return None
+
+        monkeypatch.setattr("src.orchestrator.asyncio.sleep", asleep)
+        await orch._twitch_watchdog()
+        assert calls == ["checked"]
+
+    asyncio.run(run())
+
+
+def test_irc_login_mismatch_and_rejected_token(tmp_path, settings, monkeypatch):
+    from tests.test_orchestrator_policy import make_orch
+
+    async def mismatch(token, client=None):
+        return {
+            "login": "someoneelse",
+            "scopes": ["chat:read", "chat:edit"],
+            "expires_in": 1000,
+            "user_id": "9",
+            "client_id": "cid",
+        }
+
+    async def missing_edit(token, client=None):
+        return {
+            "login": "pixelbot",
+            "scopes": ["chat:read"],
+            "expires_in": 1000,
+            "user_id": "9",
+            "client_id": "cid",
+        }
+
+    async def rejected(token, client=None):
+        raise RuntimeError("token validate HTTP 401: nope")
+
+    async def connect_ok():
+        return None
+
+    async def run():
+        orch = make_orch(tmp_path, settings)
+        orch._irc_connect = connect_ok
+        monkeypatch.setattr("src.twitch.auth.validate", mismatch)
+        await orch.connect_irc()
+        assert orch.irc_auth_note == "IRC token login is someoneelse, expected pixelbot"
+        logs = []
+
+        async def capture(message):
+            logs.append(message)
+
+        orch.hub.broadcast = capture
+        await orch.connect_irc()
+        assert any("someoneelse" in str(item) for item in logs)
+
+        monkeypatch.setattr("src.twitch.auth.validate", missing_edit)
+        await orch.connect_irc()
+        assert orch.irc_auth_note == "IRC token is missing chat:edit"
+
+        monkeypatch.setattr("src.twitch.auth.validate", rejected)
+        await orch.connect_irc()
+        assert orch._irc_fatal is True
+        assert orch.hub.status.get("twitch") == "token rejected"
+
+    asyncio.run(run())

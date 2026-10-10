@@ -63,6 +63,22 @@ def test_host_origin_and_token_guard(tmp_path, settings):
         assert denied_ws.value.status_code == 403
 
 
+def test_configured_port_accepts_loopback_hosts(tmp_path, settings):
+    from src.security import trusted_hosts
+
+    settings.port = 9090
+    allowed = trusted_hosts(9090)
+    assert "127.0.0.1:9090" in allowed
+    assert "[::1]:9090" in allowed
+    assert "::1:9090" in allowed
+    client, _orch = _client(tmp_path, settings)
+    with client:
+        assert client.get("/api/session", headers={"host": "127.0.0.1:9090"}).status_code == 200
+        assert client.get("/api/session", headers={"host": "[::1]:9090"}).status_code == 200
+        assert client.get("/api/session", headers={"host": "evil.test"}).status_code == 400
+        assert client.get("/api/session", headers={"host": "evil.test:9090"}).status_code == 400
+
+
 def test_file_guards(tmp_path, settings):
     client, orch = _client(tmp_path, settings)
     with client:

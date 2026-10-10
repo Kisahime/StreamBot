@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
@@ -58,6 +59,35 @@ FEED_ORDER = (
     "polls",
     "predictions",
 )
+
+ACTION_SCOPES: dict[str, tuple[str, ...]] = {
+    "shoutout": ("moderator:manage:shoutouts",),
+    "marker": ("channel:manage:broadcast",),
+}
+
+
+def action_status(scopes: set[str] | None) -> dict[str, str]:
+    """Health labels for dashboard actions. Unknown scopes leave the buttons enabled."""
+    out: dict[str, str] = {}
+    for name, needed in ACTION_SCOPES.items():
+        if scopes is None:
+            out[name] = "unknown"
+        elif any(scope in scopes for scope in needed):
+            out[name] = "ok"
+        else:
+            out[name] = f"missing scope {needed[0]}"
+    return out
+
+
+def remaining_ttl(expires_in: int | None, validated_at: float | None, now: float | None = None) -> int | None:
+    """Seconds left on a token. ``validated_at`` is when validate() last succeeded."""
+    if expires_in is None:
+        return None
+    if not validated_at:
+        return int(expires_in)
+    clock = time.time() if now is None else float(now)
+    return int(expires_in - (clock - float(validated_at)))
+
 
 CORE_TYPES = (
     "channel.follow",

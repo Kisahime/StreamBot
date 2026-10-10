@@ -52,6 +52,13 @@ button {
   cursor: pointer;
 }
 button:hover { border-color: var(--accent); }
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+  color: var(--muted);
+  background: #0d1117;
+}
+button:disabled:hover { border-color: var(--line); }
 button.primary { background: #12352f; border-color: #2a6b5f; }
 button.active { background: #2a1a12; border-color: var(--warn); color: var(--warn); }
 button.held { background: #3a2218; border-color: #ffb38a; }

@@ -15,10 +15,6 @@ OBS_NOTE = (
     "Ducking is off in-app. In OBS, put music on its own track and sidechain a compressor "
     "to the cohost output (a VB-Audio cable works). audio.duck_enabled stays false unless you opt in."
 )
-REFUSE_NOTE = (
-    "Ducking is off: speaker_device is null or is the default output, so Pixel's own voice would be ducked. "
-    "Set speaker_device to a different device, or sidechain music in OBS."
-)
 
 
 class _PycawSessions:
@@ -54,11 +50,12 @@ class _PycawSessions:
 
 
 class Duck:
-    """Optional per-session volume duck. Off by default.
+    """Optional per-app session duck. Off by default.
 
-    Endpoint ducking is refused unless ``speaker_device`` is a different device
-    than the default output, so Pixel's own voice is not lowered. Saved levels
-    go to ``data/duck.json`` and are restored at startup and on exit.
+    Pixel's own process is skipped by the Windows snapshot. ``audio.duck_skip``
+    names more processes to leave alone, and ``audio.duck_apps`` limits ducking
+    to that allow-list when it is not empty. Saved levels go to ``data/duck.json``
+    and are restored at startup and on exit. ``speaker_device`` may stay null.
     """
 
     def __init__(self, settings: Settings, *, backend=None, data_dir: Path | None = None) -> None:
@@ -75,33 +72,20 @@ class Duck:
         if settings.duck_enabled:
             self._try_bind()
 
-    def _default_output(self):
-        try:
-            import sounddevice as sd
+    def _session_name(self, key: str) -> str:
+        return str(key).split(":", 1)[0]
 
-            _mic, speaker = sd.default.device
-            return speaker
-        except Exception:
-            return None
-
-    def _speaker_is_separate(self) -> bool:
-        speaker = self.settings.speaker_device
-        if speaker is None or speaker == "":
+    def _should_duck(self, key: str) -> bool:
+        name = self._session_name(key).lower()
+        skip = {item.lower() for item in (self.settings.duck_skip or [])}
+        if name in skip:
             return False
-        default = self._default_output()
-        if default is None:
-            return False
-        try:
-            return int(speaker) != int(default)
-        except (TypeError, ValueError):
-            return False
+        allow = [item for item in (self.settings.duck_apps or []) if str(item).strip()]
+        if allow:
+            return name in {item.lower() for item in allow}
+        return True
 
     def _try_bind(self) -> None:
-        if not self._speaker_is_separate():
-            self.mode = "obs-sidechain"
-            self.note = REFUSE_NOTE
-            self._warn_once()
-            return
         if self._backend is None:
             if sys.platform != "win32":
                 self.mode = "obs-sidechain"
@@ -195,7 +179,11 @@ class Duck:
         if self._saved:
             return
         try:
-            current = {str(key): float(value) for key, value in (self._backend.snapshot() or {}).items()}
+            current = {
+                str(key): float(value)
+                for key, value in (self._backend.snapshot() or {}).items()
+                if self._should_duck(str(key))
+            }
         except Exception:
             log.exception("duck snapshot failed")
             self.mode = "obs-sidechain"

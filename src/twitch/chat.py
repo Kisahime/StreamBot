@@ -65,6 +65,19 @@ def normalize_token(token: str) -> str:
     return token
 
 
+def irc_scope_problem(meta: dict, nick: str) -> str:
+    """Empty when this IRC token can chat as ``nick``. Otherwise a short reason."""
+    login = str(meta.get("login") or "")
+    expected = (nick or "").strip().lstrip("#").lower()
+    if login.lower() != expected:
+        return f"IRC token login is {login}, expected {expected}"
+    scopes = {str(scope) for scope in (meta.get("scopes") or [])}
+    for scope in ("chat:read", "chat:edit"):
+        if scope not in scopes:
+            return f"IRC token is missing {scope}"
+    return ""
+
+
 def looks_like_auth_failure(text: str) -> bool:
     low = (text or "").lower()
     return any(

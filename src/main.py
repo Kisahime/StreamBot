@@ -109,6 +109,24 @@ class RecapBody(BaseModel):
     vibe: bool = False
 
 
+def _booth_port(prepared: tuple[Settings, Hub, Orchestrator] | None) -> int:
+    """Port for the Host allow list.
+
+    A prepared app (tests) uses that settings object. The process app reads
+    ``server.port`` from config without loading ``.env``.
+    """
+    if prepared is not None:
+        return int(prepared[0].port)
+    try:
+        import yaml
+
+        with (ROOT / "config.yaml").open(encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+        return int((data.get("server") or {}).get("port") or 8080)
+    except (OSError, TypeError, ValueError):
+        return 8080
+
+
 def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> FastAPI:
     @asynccontextmanager
     async def life(app: FastAPI):
@@ -138,7 +156,7 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
 
     app = FastAPI(title="Local Twitch Cohost", lifespan=life)
     app.add_middleware(BoothGuard)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts(), www_redirect=False)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts(_booth_port(prepared)), www_redirect=False)
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
     @app.get("/")

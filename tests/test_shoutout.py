@@ -48,6 +48,46 @@ def test_viewer_so_is_dropped_and_mod_so_is_cooled_down(tmp_path, settings):
     asyncio.run(run())
 
 
+def test_lurk_is_not_a_shoutout(tmp_path, settings):
+    async def run():
+        settings.chat_commands = ["!so", "!pixel", "!ask", "!lurk"]
+        orch = make_orch(tmp_path, settings)
+        calls: list[str | None] = []
+
+        async def fake_shoutout(login=None):
+            calls.append(login)
+
+        orch.shoutout = fake_shoutout
+        lurk = ChatLine(user="bob", text="!lurk bob", command="!lurk")
+        orch._chat_pending.append(lurk)
+        assert await orch._consider_chat_locked() is True
+        assert calls == []
+        assert orch._last_skip["reason"] == "unhandled command"
+
+        mod = ChatLine(user="moddy", text="!so bob", command="!so", is_mod=True)
+        orch._chat_pending.append(mod)
+        assert await orch._consider_chat_locked() is True
+        assert calls == ["bob"]
+
+        orch._last_chat_reply = 0
+        orch._user_reply_at.clear()
+        orch._reply_times.clear()
+        viewer = ChatLine(user="bob", text="!so bob", command="!so")
+        orch._chat_pending.append(viewer)
+        assert await orch._consider_chat_locked() is True
+        assert calls == ["bob"]
+        assert orch._last_skip["reason"] == "not a mod"
+
+        settings.mod_commands = ["!so", "!lurk"]
+        again = ChatLine(user="bob", text="!lurk bob", command="!lurk")
+        orch._chat_pending.append(again)
+        assert await orch._consider_chat_locked() is True
+        assert calls == ["bob"]
+        assert orch._last_skip["reason"] == "not a mod"
+
+    asyncio.run(run())
+
+
 def test_dashboard_shoutout_does_not_need_a_mod_badge(tmp_path, settings, monkeypatch):
     async def run():
         orch = make_orch(tmp_path, settings)
