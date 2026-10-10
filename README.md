@@ -43,7 +43,7 @@ Built for an **8 GB NVIDIA GPU**. Default model is `qwen2.5:3b` so Whisper can s
      Create one at [Twitch Token Generator](https://twitchtokengenerator.com/) (custom scope: those two) or via the [Twitch CLI](https://dev.twitch.tv/docs/cli/). Prefix with `oauth:` if it is missing.
    - Follows / subs / raids: see **IRC vs EventSub** below.
 
-3. Double-click `start.bat` (creates `.venv`, installs deps, starts the app).
+3. Double-click `start.bat` (creates `.venv`, installs the pinned runtime deps from `requirements.txt`, starts the app).
 
 4. Open [http://127.0.0.1:8080](http://127.0.0.1:8080)
 
@@ -136,6 +136,25 @@ whisper:
 ```
 
 Then: `ollama pull qwen2.5:7b-instruct-q4_K_M`
+
+## Dependencies
+
+`requirements.txt` is the pinned runtime install (`fastapi==…`, not `>=`). `start.bat` installs that file and nothing else. `pytest` and `ruff` are not in it.
+
+`requirements-dev.txt` is those same pins plus `pytest` and `ruff`:
+
+```bat
+.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.venv\Scripts\python.exe -m pytest -q
+.venv\Scripts\python.exe -m ruff check src tests
+```
+
+Optional extras are not installed by either file. Add them yourself when you turn the feature on:
+
+- `pycaw` — Windows endpoint ducking when `audio.duck_enabled: true`
+- `openwakeword` — local wake word when `audio.wake_word: true`
+
+To bump a pin: upgrade that package in the project venv (`python -m pip install --upgrade some-package`), run `python -m pip freeze`, and copy the new `name==version` into `requirements.txt` if the app imports it, or into `requirements-dev.txt` if it is only `pytest` or `ruff`. Leave `pytest` and `ruff` out of `requirements.txt`. Run the tests before you commit. Do not commit `.env`.
 
 ## Config
 
