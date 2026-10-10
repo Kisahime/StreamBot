@@ -169,10 +169,11 @@ function applyOverlayMessage(raw) {
     setCaption(msg.data.text || "", true);
   } else if (msg.type === "alert") {
     const d = msg.data || {};
-    showAlert(d.text || `${d.kind || "alert"} ${d.user || ""}`.trim(), d.kind || "alert");
     if (d.kind === "ad_break") {
       const match = /(\d+)/.exec(d.text || "");
       showAd(match ? Number(match[1]) : 0);
+    } else {
+      showAlert(d.text || `${d.kind || "alert"} ${d.user || ""}`.trim(), d.kind || "alert");
     }
   }
 }

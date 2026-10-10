@@ -349,16 +349,28 @@ function renderNotes(person) {
   const add = document.createElement("input");
   add.type = "text";
   add.placeholder = "Add a note";
-  add.addEventListener("keydown", async (ev) => {
-    if (ev.key !== "Enter") return;
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.textContent = "Add";
+  const submitNote = async () => {
     const text = add.value.trim();
     if (!text) return;
     const data = await post("/api/memory/note", { login: noteLogin(person), text, op: "add" });
     if (failed(data)) return;
     if (data.memory) renderMemory(data.memory);
+  };
+  add.addEventListener("keydown", async (ev) => {
+    if (ev.key !== "Enter") return;
+    ev.preventDefault();
+    await submitNote();
+  });
+  addBtn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    submitNote();
   });
   box.appendChild(pin);
   box.appendChild(add);
+  box.appendChild(addBtn);
   return box;
 }
 
