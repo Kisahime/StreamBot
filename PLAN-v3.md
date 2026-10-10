@@ -251,33 +251,33 @@ Do these on a test stream or with the booth open before relying on the features.
 
 ### Phase 4: Booth quality-of-life (💡 suggestions)
 
-- [ ] **V3-P4-01 💡 Stream Deck / hotkey friendly API**
+- [x] **V3-P4-01 💡 Stream Deck / hotkey friendly API**
   - *Why:* every booth action is already an endpoint, but the per-launch token makes external buttons impossible.
   - *Do:* optional `COHOST_CONTROL_KEY` in `.env`; when set, `BoothGuard` also accepts it in `X-Cohost-Token` for a small allow-list (`/api/interrupt`, `/api/tts/mute`, `/api/ptt`, `/api/marker`, `/api/mood`, `/api/profile`). Document curl/Stream Deck "Website/API" examples.
   - *Files:* `src/security.py`, `src/main.py`, `.env.example`, `README.md`, `tests/test_api.py`
   - *Acceptance:* with the key set, `/api/interrupt` works with it and `/api/persona` still rejects it; without the key nothing changes.
   - *Depends on:* V3-P1-01
 
-- [ ] **V3-P4-02 💡 Voice and persona per profile**
+- [x] **V3-P4-02 💡 Voice and persona per profile**
   - *Do:* allow `tts_voice`, `length_scale` and an optional `persona_file` in a profile; switching profile swaps them (voice download progress shown as now).
   - *Files:* `src/settings.py`, `src/orchestrator.py`, `config.yaml`, tests
   - *Acceptance:* switching to a profile with `tts_voice: en_US-kristin-medium` changes `health.voice`; invalid voices are rejected at load time.
   - *Depends on:* V3-P2-03
 
-- [ ] **V3-P4-03 💡 Session transcript export**
+- [x] **V3-P4-03 💡 Session transcript export**
   - *Do:* append every transcript/chat/alert line to `data/sessions/<session>.jsonl` (rotated, honours retention and Forget); dashboard "Download transcript" button.
   - *Files:* `src/orchestrator.py`, `src/memory.py`, `src/main.py`, dashboard, tests
   - *Acceptance:* a session produces a JSONL file; **Forget** removes that viewer's lines from it.
   - *Depends on:* V3-P3-02
 
-- [ ] **V3-P4-04 💡 Simple custom text commands**
+- [x] **V3-P4-04 💡 Simple custom text commands**
   - *Why:* fixes the "commands that aren't !so" gap from V3-P1-02 in a useful way.
   - *Do:* `chat.custom_commands: {"!lurk": "enjoy the lurk {user}", "!discord": "…"}` posts fixed text (no model) with per-command cooldown; commands are added to the allowlist automatically.
   - *Files:* `src/settings.py`, `src/orchestrator.py`, `src/policy.py`, `config.yaml`, tests
   - *Acceptance:* `!lurk` posts the filled text once per cooldown; it never triggers a shoutout or a model call.
   - *Depends on:* V3-P1-02
 
-- [ ] **V3-P4-05 💡 Latency panel with history**
+- [x] **V3-P4-05 💡 Latency panel with history**
   - *Why:* `timings` already captures STT, first token, first audio and chat send for the last reply only.
   - *Do:* keep a rolling 50-sample window and show p50/p95 per stage on the dashboard; warn when first-audio p95 > 2.5 s with a link to the VRAM tips.
   - *Files:* `src/orchestrator.py`, `src/health.py`, `src/web/static/app.js`, tests

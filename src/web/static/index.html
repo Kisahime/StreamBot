@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Local Twitch Cohost</title>
-  <link rel="stylesheet" href="/static/app.css?v=14" />
+  <link rel="stylesheet" href="/static/app.css?v=15" />
 </head>
 <body>
   <div class="app">
@@ -62,6 +62,8 @@
         <h2>Systems</h2>
         <ul id="sysList" class="sys"></ul>
         <p class="hint" id="timingLine"></p>
+        <p class="hint warn" id="timingWarn" hidden></p>
+        <p class="hint" id="vram-tips">8 GB VRAM tips: snappy keeps Whisper on the GPU with the 3B model. If first audio stays slow, set vram.profile to quality or whisper.device to cpu.</p>
         <h2 class="dev-title">Twitch</h2>
         <p class="hint" id="ircLine">IRC: disconnected</p>
         <p class="hint" id="eventLine">EventSub: disconnected</p>
@@ -187,6 +189,7 @@
         <button id="recapBtn" type="button">Build recap</button>
         <button id="recapVibeBtn" type="button">Add vibe</button>
         <button id="recapCopy" type="button">Copy</button>
+        <button id="transcriptBtn" type="button">Download transcript</button>
       </div>
     </section>
 
@@ -198,6 +201,6 @@
       <div id="eventLog" class="log"></div>
     </section>
   </div>
-  <script src="/static/app.js?v=19"></script>
+  <script src="/static/app.js?v=20"></script>
 </body>
 </html>

@@ -108,6 +108,13 @@ chat:
   ask_queue: false
   # Gap between mod !pixel clip commands.
   clip_cooldown_seconds: 60
+  # Fixed text replies. {user} is the chatter. No model and no shoutout.
+  # Each command has its own timer of custom_command_cooldown_seconds.
+  # custom_commands:
+  #   "!lurk": "enjoy the lurk {user}"
+  #   "!discord": "discord is linked in the panels"
+  custom_commands: {}
+  custom_command_cooldown_seconds: 30
 
 memory:
   chat_context_lines: 20
@@ -154,6 +161,7 @@ safety:
   allow_links: false
 
 # Named booth presets. POST /api/profile applies one and stores the name in data/booth.json.
+# A profile may also set tts_voice (one of tts.voices), length_scale, and persona_file.
 profiles:
   "Just chatting":
     mood: hype

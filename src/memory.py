@@ -5,6 +5,7 @@ import logging
 import re
 import secrets
 import shutil
+import threading
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -315,6 +316,7 @@ class ConversationMemory:
         self.streamer_display = "Streamer"
         self.cohost_name = "Cohost"
         self.dirty = False
+        self._transcript_lock = threading.Lock()
         self.load()
 
     def set_streamer_display(self, name: str) -> None:
@@ -554,6 +556,7 @@ class ConversationMemory:
             )
         )
         self.save()
+        self._append_transcript(ev)
         return ev
 
     def note_reply_to(self, user: str, reply: str, thread: str | None = None) -> None:
@@ -596,6 +599,7 @@ class ConversationMemory:
             (event for event in self.events if (event.user or "").lower() != key),
             maxlen=self.event_limit,
         )
+        self._scrub_transcripts(key)
         self.save()
 
     def prune(self, now: float | None = None) -> int:
@@ -619,8 +623,85 @@ class ConversationMemory:
             if viewer.last_ts and viewer.last_ts < cutoff:
                 self.viewers.pop(key, None)
                 removed += 1
+        removed += self._prune_transcripts(cutoff)
         if removed:
             self.save()
+        return removed
+
+    def sessions_dir(self) -> Path:
+        return self.path.parent / "sessions"
+
+    def transcript_path(self, session_id: str | None = None) -> Path:
+        sid = session_id or self.session_id
+        return self.sessions_dir() / f"{sid}.jsonl"
+
+    def _append_transcript(self, ev: Event) -> None:
+        row = {
+            "ts": ev.ts,
+            "kind": ev.kind,
+            "user": ev.user,
+            "text": ev.text,
+            "via": ev.via,
+            "session_id": ev.session_id,
+        }
+        try:
+            with self._transcript_lock:
+                folder = self.sessions_dir()
+                folder.mkdir(parents=True, exist_ok=True)
+                with self.transcript_path().open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except OSError:
+            log.exception("transcript append failed")
+
+    def _scrub_transcripts(self, login: str) -> None:
+        folder = self.sessions_dir()
+        if not folder.exists():
+            return
+        key = (login or "").lower()
+        try:
+            with self._transcript_lock:
+                for path in folder.glob("*.jsonl"):
+                    self._rewrite_transcript(path, key)
+        except OSError:
+            log.exception("transcript scrub failed")
+
+    def _rewrite_transcript(self, path: Path, login: str) -> None:
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            log.exception("could not read %s", path)
+            return
+        kept: list[str] = []
+        for line in raw.splitlines():
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                kept.append(line)
+                continue
+            if str(item.get("user") or "").lower() == login:
+                continue
+            kept.append(line)
+        body = ("\n".join(kept) + "\n") if kept else ""
+        path.write_text(body, encoding="utf-8")
+
+    def _prune_transcripts(self, cutoff: float) -> int:
+        folder = self.sessions_dir()
+        if not folder.exists():
+            return 0
+        removed = 0
+        try:
+            with self._transcript_lock:
+                for path in folder.glob("*.jsonl"):
+                    try:
+                        if path.stat().st_mtime < cutoff:
+                            path.unlink()
+                            removed += 1
+                    except OSError:
+                        log.exception("could not prune %s", path)
+        except OSError:
+            log.exception("transcript prune failed")
         return removed
 
     def viewer(self, name: str) -> Viewer | None:

@@ -63,6 +63,8 @@ button.primary { background: #12352f; border-color: #2a6b5f; }
 button.active { background: #2a1a12; border-color: var(--warn); color: var(--warn); }
 button.held { background: #3a2218; border-color: #ffb38a; }
 .hint { color: var(--muted); min-height: 1.4em; margin: 8px 0 0; font-size: 13px; }
+.hint.warn { color: var(--warn); }
+.hint.warn a { color: var(--warn); }
 .banner {
   margin: 0 0 12px;
   padding: 8px 12px;

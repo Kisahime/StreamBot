@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -142,6 +142,7 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
     @asynccontextmanager
     async def life(app: FastAPI):
         app.state.control_token = secrets.token_urlsafe(32)
+        app.state.control_key = os.getenv("COHOST_CONTROL_KEY", "").strip()
         if prepared is not None:
             settings, hub, orch = prepared
             app.state.settings = settings
@@ -185,6 +186,19 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
     @app.get("/api/session")
     async def session():
         return {"token": app.state.control_token}
+
+    @app.get("/api/transcript")
+    async def transcript():
+        memory = app.state.orch.memory
+        path = memory.transcript_path()
+        filename = f"{memory.session_id}.jsonl"
+        if not path.exists():
+            return Response(
+                b"",
+                media_type="application/x-ndjson",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+        return FileResponse(path, filename=filename, media_type="application/x-ndjson")
 
     @app.get("/api/health")
     async def health():
