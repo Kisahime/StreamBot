@@ -8,7 +8,7 @@ from typing import Any
 
 from src.audio.devices import list_devices
 from src.settings import Settings
-from src.twitch.auth import FEED_ORDER
+from src.twitch.auth import FEED_ORDER, action_status, remaining_ttl
 
 _gpu_cache: tuple[float, dict[str, Any]] | None = None
 _ollama_cache: tuple[float, dict[str, Any]] | None = None
@@ -102,6 +102,7 @@ async def snapshot(settings: Settings, orch) -> dict[str, Any]:
             "has_event_token": bool(settings.event_token()),
             "events_enabled": settings.events_enabled,
             "feeds": _twitch_feeds(orch),
+            "actions": action_status(getattr(getattr(orch, "eventsub", None), "scopes", None)),
         },
         "persona": orch.persona.get("name"),
         "streamer": {
@@ -158,9 +159,17 @@ def _twitch_feeds(orch) -> dict[str, str]:
 
 def _setup_hints(ollama: dict[str, Any], settings: Settings, gpu: dict[str, Any] | None = None, orch=None) -> list[str]:
     hints: list[str] = []
-    expires = getattr(getattr(orch, "eventsub", None), "expires_in", None)
+    client = getattr(orch, "eventsub", None)
+    expires = remaining_ttl(
+        getattr(client, "expires_in", None),
+        getattr(client, "validated_at", None),
+        time.time(),
+    )
     if isinstance(expires, int) and expires < 24 * 60 * 60:
         hints.append("Twitch token expires in under 24 hours. Generate a new one before the next stream.")
+    note = str(getattr(orch, "irc_auth_note", "") or "")
+    if note:
+        hints.append(note)
     hints.extend(settings.secret_hints())
     if not ollama.get("ok"):
         hints.append("Ollama is not reachable. Install it from https://ollama.com and keep it running.")

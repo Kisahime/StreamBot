@@ -164,6 +164,12 @@ class Settings:
         self.max_utterance_seconds = float(_get(data, "audio.max_utterance_seconds", 20))
         self.duck_enabled = bool(_get(data, "audio.duck_enabled", False))
         self.duck_gain = float(_get(data, "audio.duck_gain", 0.25))
+        self.duck_apps = [str(item) for item in (_get(data, "audio.duck_apps", []) or []) if str(item).strip()]
+        self.duck_skip = [
+            str(item)
+            for item in (_get(data, "audio.duck_skip", ["obs64.exe", "Discord.exe"]) or [])
+            if str(item).strip()
+        ]
         self.barge_in = bool(_get(data, "audio.barge_in", True))
         self.echo_gate = bool(_get(data, "audio.echo_gate", True))
         self.echo_gate_ratio = float(_get(data, "audio.echo_gate_ratio", 2.5))

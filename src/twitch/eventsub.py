@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -161,6 +162,7 @@ class EventSubClient:
         self._ws: Any = None
         self.scopes: set[str] | None = None
         self.expires_in: int | None = None
+        self.validated_at: float | None = None
         self.token_login = ""
         self.feed_status: dict[str, str] = {}
         self.keepalive_timeout = 10.0
@@ -399,6 +401,16 @@ class EventSubClient:
             "Content-Type": "application/json",
         }
 
+    def _apply_auth(self, meta: dict) -> None:
+        self.scopes = set(meta.get("scopes") or [])
+        expires = meta.get("expires_in")
+        self.expires_in = int(expires) if expires is not None else None
+        self.token_login = str(meta.get("login") or "")
+        self.validated_at = time.time()
+        user_id = str(meta.get("user_id") or "")
+        if user_id:
+            self.moderator_id = user_id
+
     async def refresh_auth(self) -> None:
         from src.twitch.auth import validate
 
@@ -410,13 +422,23 @@ class EventSubClient:
             self.expires_in = None
             self.token_login = ""
             return
-        self.scopes = set(meta.get("scopes") or [])
-        expires = meta.get("expires_in")
-        self.expires_in = int(expires) if expires is not None else None
-        self.token_login = str(meta.get("login") or "")
-        user_id = str(meta.get("user_id") or "")
-        if user_id:
-            self.moderator_id = user_id
+        self._apply_auth(meta)
+
+    async def revalidate(self) -> str:
+        """Refresh scopes while connected. A 401 or 403 is fatal."""
+        from src.twitch.auth import validate
+
+        try:
+            meta = await validate(self.token)
+        except Exception as exc:
+            message = str(exc)
+            if "HTTP 401" in message or "HTTP 403" in message:
+                self.fatal = True
+                return "token rejected"
+            log.warning("Token revalidate failed: %s", exc)
+            return "error"
+        self._apply_auth(meta)
+        return "ok"
 
     async def resolve_ids(self) -> None:
         if self.broadcaster_id and self.moderator_id:

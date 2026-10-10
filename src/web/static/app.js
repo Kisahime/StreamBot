@@ -364,6 +364,15 @@ function renderSys(health) {
       feedList.appendChild(el("li", "", `${name}: ${feeds[name]}`));
     }
   }
+  const actions = twitch.actions || {};
+  for (const [id, key] of [["shoutoutBtn", "shoutout"], ["markerBtn", "marker"]]) {
+    const btn = $(id);
+    const state = String(actions[key] || "");
+    const missing = state.startsWith("missing scope");
+    if (!btn) continue;
+    btn.disabled = missing;
+    btn.title = missing ? state : "";
+  }
   const timings = health.timings || {};
   const bits = [];
   if (timings.stt_ms != null) bits.push(`STT ${timings.stt_ms} ms`);

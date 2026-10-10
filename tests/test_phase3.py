@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.audio.devices import match_device
-from src.audio.duck import REFUSE_NOTE, Duck
+from src.audio.duck import Duck
 from src.audio.mic import MicListener
 from src.audio.stt import SpeechToText
 from src.audio.wake import WAKE_FRAME, to_wake_frames
@@ -191,6 +191,87 @@ def test_wake_score_runs_off_the_loop_and_arms_one_utterance(settings):
     asyncio.run(run())
 
 
+def test_wake_frames_are_fed_once(settings):
+    fed: list[np.ndarray] = []
+
+    class FakeModel:
+        def __init__(self):
+            self.resets = 0
+            self.loud = False
+
+        def predict(self, frame):
+            fed.append(np.array(frame, copy=True))
+            score = 0.9 if self.loud else 0.1
+            return {"hey_jarvis": score}
+
+        def reset(self):
+            self.resets += 1
+
+    async def run():
+        mic = MicListener(settings, lambda _audio: asyncio.sleep(0))
+        model = FakeModel()
+        mic.wake.model = model
+        mic.wake.models = ["hey_jarvis"]
+        mic.wake.threshold = 0.5
+        task = asyncio.create_task(mic._run())
+        try:
+            for count in (400, 900, 1280, 100, 1280, 180):
+                mic._enqueue(np.full(count, 0.2, dtype=np.float32))
+            for _ in range(40):
+                await asyncio.sleep(0.02)
+                idle = mic._queue.empty() and not mic._wake_backlog
+                idle = idle and (mic._wake_task is None or mic._wake_task.done())
+                if idle and sum(frame.size for frame in fed) >= 3 * WAKE_FRAME:
+                    break
+            assert [frame.size for frame in fed] == [WAKE_FRAME, WAKE_FRAME, WAKE_FRAME]
+            assert sum(frame.size for frame in fed) == 3 * WAKE_FRAME
+            assert model.resets == 0
+            model.loud = True
+            mic._enqueue(np.full(WAKE_FRAME, 0.2, dtype=np.float32))
+            await asyncio.sleep(0.05)
+            assert mic._wake_task is not None
+            await asyncio.wait_for(mic._wake_task, 1)
+            assert model.resets == 1
+            assert mic._wake_latch
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    asyncio.run(run())
+
+
+def test_level_broadcasts_wake_score_while_idle(tmp_path, settings, monkeypatch):
+    orch = make_orch(tmp_path, settings)
+    orch.mic._stream = object()
+    orch.mic.level = 0.25
+    orch.mic.wake_score = 0.4
+
+    class _Wake:
+        model = object()
+
+        def status(self):
+            return {"enabled": True, "ready": True}
+
+    orch.mic.wake = _Wake()
+    seen: list[dict] = []
+
+    async def capture(message):
+        seen.append(message)
+
+    orch.hub.broadcast = capture
+
+    async def stop_after_one(_delay):
+        orch._stopping = True
+
+    monkeypatch.setattr("src.orchestrator.asyncio.sleep", stop_after_one)
+    asyncio.run(orch._level_loop())
+    levels = [message for message in seen if message.get("type") == "level"]
+    assert levels
+    assert levels[0]["data"]["wake"] == pytest.approx(0.4)
+    assert levels[0]["data"]["level"] == pytest.approx(0.25)
+
+
 class _Sessions:
     def __init__(self):
         self.levels = {"chrome:4": 0.8}
@@ -202,35 +283,25 @@ class _Sessions:
         self.levels[key] = level
 
 
-def test_duck_refuses_default_output_and_restores_saved_volume(settings, tmp_path, monkeypatch):
-    import sounddevice as sd
-
+def test_duck_sessions_on_the_default_output_and_restores_saved_volume(settings, tmp_path):
     sessions = _Sessions()
-    monkeypatch.setattr(sd.default, "device", (0, 1), raising=False)
     settings.speaker_device = None
+    settings.duck_gain = 0.25
     ducked = Duck(settings, backend=sessions, data_dir=tmp_path)
     ducked.set_enabled(True)
-    assert ducked.mode == "obs-sidechain"
-    assert "speaker_device" in ducked.note
-    assert ducked.note == REFUSE_NOTE
+    assert ducked.mode == "sessions"
+    assert ducked.note == ""
     ducked.down()
-    assert sessions.levels["chrome:4"] == 0.8
+    assert sessions.levels["chrome:4"] == pytest.approx(0.2)
+    saved = json.loads((tmp_path / "duck.json").read_text(encoding="utf-8"))
+    assert saved["sessions"]["chrome:4"] == pytest.approx(0.8)
 
     settings.speaker_device = 1
     same = Duck(settings, backend=sessions, data_dir=tmp_path)
     same.set_enabled(True)
-    assert same.mode == "obs-sidechain"
+    assert same.mode == "sessions"
 
-    settings.speaker_device = 3
-    settings.duck_gain = 0.25
-    separate = Duck(settings, backend=sessions, data_dir=tmp_path)
-    separate.set_enabled(True)
-    assert separate.mode == "sessions"
-    separate.down()
-    assert sessions.levels["chrome:4"] == pytest.approx(0.2)
-    saved = json.loads((tmp_path / "duck.json").read_text(encoding="utf-8"))
-    assert saved["sessions"]["chrome:4"] == pytest.approx(0.8)
-    separate.up()
+    ducked.up()
     assert sessions.levels["chrome:4"] == pytest.approx(0.8)
     assert not (tmp_path / "duck.json").exists()
 

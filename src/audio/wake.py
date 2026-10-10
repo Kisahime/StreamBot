@@ -78,7 +78,13 @@ class WakeWord:
                     continue
                 best = max(best, float(value))
         self.score = best
-        return best, best >= self.threshold
+        heard = best >= self.threshold
+        if heard and self.model is not None and hasattr(self.model, "reset"):
+            try:
+                self.model.reset()
+            except Exception:
+                log.exception("wake reset failed")
+        return best, heard
 
     def heard(self, audio: np.ndarray) -> bool:
         _score, heard = self.evaluate(audio)

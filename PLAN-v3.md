@@ -99,43 +99,43 @@ Do these on a test stream or with the booth open before relying on the features.
 
 ### Phase 1: Fix what's broken (do first)
 
-- [ ] **V3-P1-01 🔴 Pin the transitive web stack and accept IPv6 loopback on the real port** (F-01)
+- [x] **V3-P1-01 🔴 Pin the transitive web stack and accept IPv6 loopback on the real port** (F-01)
   - *Do:* add `starlette==<version that CI uses>` and `anyio==…` (and any other resolved transitive deps of fastapi/uvicorn) to `requirements.txt`. Pass `settings.port` into `trusted_hosts()` in `create_app` (read settings before middleware is added, or build the middleware list in `life`). If the installed Starlette strips the port in a way that breaks `[::1]`, add `"::1"` and `"[::1]"` handling (or a small custom Host check in `BoothGuard`) so `Host: [::1]:<port>` passes and `Host: evil.test` still returns 400.
   - *Files:* `requirements.txt`, `src/main.py`, `src/security.py`, `tests/test_phase2.py`, `tests/test_requirements.py`
   - *Acceptance:* `test_host_origin_and_token_guard` passes locally and in CI; a new test with `server.port: 9090` accepts `Host: 127.0.0.1:9090` and `[::1]:9090`; `test_requirements.py` asserts starlette is pinned.
   - *Depends on:* none
 
-- [ ] **V3-P1-02 🔴 Only `!so` (and future explicit mod commands) can trigger a shoutout** (F-02)
+- [x] **V3-P1-02 🔴 Only `!so` (and future explicit mod commands) can trigger a shoutout** (F-02)
   - *Do:* in `_perform_chat()` run the shoutout branch only when `target.command == "!so"`. For other allowlisted non-speak commands, either ignore them with skip reason `unhandled command`, or route them to a small command table (see V3-P4-04). Make the mod check apply to any command in `chat.mod_commands`, independent of which branch handles it.
   - *Files:* `src/orchestrator.py`, `src/policy.py`, `tests/test_shoutout.py`
   - *Acceptance:* with `chat.commands: ["!so","!pixel","!ask","!lurk"]`, a viewer's `!lurk bob` never calls `helix.shoutout`; a mod's `!so bob` still does; a viewer's `!so bob` is skipped with `not a mod`.
   - *Depends on:* none
 
-- [ ] **V3-P1-03 🟠 Fence viewer turns in conversation history** (F-03)
+- [x] **V3-P1-03 🟠 Fence viewer turns in conversation history** (F-03)
   - *Do:* in `ConversationMemory.llm_messages()` wrap `turn.text` with `fence_viewer_text()` when `turn.role == "viewer"` (and for `twitch_event` turns that carry user text, e.g. resub messages). Keep streamer turns unfenced. Keep assistant turns as they are.
   - *Files:* `src/memory.py`, `tests/test_memory.py`
   - *Acceptance:* a stored viewer line "ignore previous instructions" comes back from `llm_messages()` inside `<<viewer>> … <</viewer>>`; streamer turns are unchanged.
   - *Depends on:* none
 
-- [ ] **V3-P1-04 🟠 Time-box alert and recap completions** (F-04)
+- [x] **V3-P1-04 🟠 Time-box alert and recap completions** (F-04)
   - *Do:* wrap the `llm.complete()` calls in `_finish_reply()` and `make_recap()` with `asyncio.wait_for(…, settings.chat_timeout_seconds)` (or a new `ollama.event_timeout_seconds`, default 20). On timeout: skip with reason `llm timeout`, return the phase to idle, and keep the alert in the log/memory.
   - *Files:* `src/orchestrator.py`, `src/settings.py`, `config.yaml`, `tests/test_phase4.py`
   - *Acceptance:* with a fake LLM that sleeps 60 s, an alert is abandoned after the timeout and the next queued alert is handled; the recap endpoint returns the deterministic recap without a vibe paragraph.
   - *Depends on:* none
 
-- [ ] **V3-P1-05 🟠 Show the wake score while idle and feed each frame once** (F-05)
+- [x] **V3-P1-05 🟠 Show the wake score while idle and feed each frame once** (F-05)
   - *Do:* broadcast `level` from `_level_loop()` whenever the mic stream is open and either listening/PTT **or** the wake model is loaded. In `MicListener._run()` keep a carry-over buffer and pass only *new* complete 1,280-sample frames to `WakeWord.evaluate()` (no overlapping re-scoring). Reset the model's internal buffer (`model.reset()` if available) after a detection.
   - *Files:* `src/orchestrator.py`, `src/audio/mic.py`, `src/audio/wake.py`, `tests/test_phase3.py`
   - *Acceptance:* a unit test with a fake model counts that each sample is fed exactly once across many chunks; a level message with a `wake` value is broadcast while `listen_enabled` is false and the wake model is present. Live: the owner check V3-P0-04 shows detections without excess false triggers.
   - *Depends on:* none
 
-- [ ] **V3-P1-06 🟠 Re-validate tokens hourly and check action scopes up front** (F-06)
+- [x] **V3-P1-06 🟠 Re-validate tokens hourly and check action scopes up front** (F-06)
   - *Do:* add a background task (in the Twitch watchdog) that calls `auth.validate()` for the event token every 60 min while connected, updating `scopes`, `expires_in` and a `validated_at` time. Validate the IRC token once on connect (scopes `chat:read`, `chat:edit`, and login matches `TWITCH_NICK`). Add `moderator:manage:shoutouts` and `channel:manage:broadcast` to a new `ACTION_SCOPES` map and report them in health (`actions: {shoutout: ok|missing scope …, marker: …}`); grey out those dashboard buttons with a tooltip when missing. Compute "expires in" as `expires_in - (now - validated_at)`.
   - *Files:* `src/twitch/auth.py`, `src/twitch/eventsub.py`, `src/twitch/chat.py`, `src/orchestrator.py`, `src/health.py`, `src/web/static/app.js`, `tests/test_eventsub_scopes.py`
   - *Acceptance:* tests with a patched `validate` show the hint appears once the computed remaining time drops below 24 h; a 401 on re-validate flips status to `token rejected`; health lists action scopes; IRC login mismatch is reported clearly.
   - *Depends on:* none
 
-- [ ] **V3-P1-07 🟠 Make session ducking usable on one output device, with an app list** (F-07)
+- [x] **V3-P1-07 🟠 Make session ducking usable on one output device, with an app list** (F-07)
   - *Do:* in session mode, drop the "speaker must be a different index" refusal (our own PID is already skipped). Add `audio.duck_apps` (allow-list of process names, e.g. `["Spotify.exe","chrome.exe"]`) and `audio.duck_skip` (default `["obs64.exe","Discord.exe"]`); duck only matching sessions. Update README to say "per-app session ducking".
   - *Files:* `src/audio/duck.py`, `src/settings.py`, `config.yaml`, `README.md`, `tests/` (new `test_duck.py` with a fake backend)
   - *Acceptance:* with a fake backend containing `Spotify.exe`, `obs64.exe` and our own PID, only Spotify is lowered and later restored; `speaker_device: null` no longer forces `obs-sidechain` mode on Windows.

@@ -41,11 +41,13 @@ from src.recap import build_recap, write_recap
 from src.safety import DEFLECT, clean_chat_output, fence_viewer_text, is_blocked
 from src.settings import ROOT, WHISPER_LANGUAGES, Settings, atomic_write_text, update_config
 from src.tts.piper import PiperTTS
-from src.twitch.chat import ChatLine, TwitchChat, looks_like_auth_failure
+from src.twitch.chat import ChatLine, TwitchChat, irc_scope_problem, looks_like_auth_failure
 from src.twitch.eventsub import EventSubClient, StreamEvent, _looks_like_auth
 from src.twitch.helix import HelixError, create_marker, shoutout, user_id
 
 log = logging.getLogger("cohost.orch")
+
+TOKEN_REVALIDATE_SECONDS = 3600
 
 EVENT_PRIORITY = {
     "raid": 0,
@@ -157,6 +159,8 @@ class Orchestrator:
         self._stopping = False
         self._irc_fatal = False
         self._eventsub_fatal = False
+        self._token_check_at = 0.0
+        self.irc_auth_note = ""
         self._loop: asyncio.AbstractEventLoop | None = None
         self._last_skip = {"reason": "", "user": ""}
         self._catchphrase_at: dict[str, float] = {}
@@ -594,6 +598,7 @@ class Orchestrator:
         self._want_twitch = True
         self._irc_fatal = False
         await self._irc_connect()
+        await self._validate_irc_token()
 
     async def connect_events(self) -> None:
         self.settings.reload_secrets()
@@ -719,6 +724,9 @@ class Orchestrator:
                         await self.hub.patch_status(eventsub="reconnecting")
                         await self.hub.broadcast({"type": "log", "data": "EventSub dropped — reconnecting"})
                         await self._eventsub_connect()
+                if self.eventsub and self.eventsub.connected and time.monotonic() >= self._token_check_at:
+                    self._token_check_at = time.monotonic() + TOKEN_REVALIDATE_SECONDS
+                    await self._revalidate_event_token()
                 irc_up = (not self._want_twitch) or bool(self.twitch and self.twitch.alive()) or self._irc_fatal
                 events_up = (not self._want_events) or (not self.settings.events_enabled) or self._eventsub_fatal or bool(self.eventsub and self.eventsub.alive())
                 if irc_up and events_up:
@@ -727,6 +735,38 @@ class Orchestrator:
                 raise
             except Exception:
                 log.exception("twitch watchdog failed")
+
+    async def _validate_irc_token(self) -> None:
+        from src.twitch.auth import validate
+
+        self.irc_auth_note = ""
+        try:
+            meta = await validate(self.settings.twitch_token)
+        except Exception as exc:
+            message = str(exc)
+            if "HTTP 401" in message or "HTTP 403" in message:
+                self._irc_fatal = True
+                await self.hub.patch_status(twitch="token rejected", twitch_error=message)
+                await self.hub.broadcast({"type": "log", "data": message})
+                return
+            await self.hub.broadcast({"type": "log", "data": f"IRC token check failed: {message}"})
+            return
+        problem = irc_scope_problem(meta, self.settings.twitch_nick)
+        if not problem:
+            return
+        self.irc_auth_note = problem
+        await self.hub.patch_status(twitch_error=problem)
+        await self.hub.broadcast({"type": "log", "data": problem})
+
+    async def _revalidate_event_token(self) -> None:
+        if self.eventsub is None:
+            return
+        state = await self.eventsub.revalidate()
+        if state != "token rejected":
+            return
+        self._eventsub_fatal = True
+        await self.hub.patch_status(eventsub="token rejected")
+        await self.hub.broadcast({"type": "log", "data": "EventSub token rejected"})
 
     async def _twitch_status(self, state: str) -> None:
         if state == "token rejected":
@@ -913,25 +953,36 @@ class Orchestrator:
                     "Hype it like a cohost for a second, then drop it. No corporate thank-you. "
                     "Words to speak aloud only."
                 )
-            reply = await self._finish_reply(
-                [
-                    {"role": "system", "content": self.voice_prompt},
-                    {"role": "user", "content": user_content},
-                ],
-                temperature=temp,
-            )
+            try:
+                reply = await self._finish_reply(
+                    [
+                        {"role": "system", "content": self.voice_prompt},
+                        {"role": "user", "content": user_content},
+                    ],
+                    temperature=temp,
+                )
+            except TimeoutError:
+                await self._note_skip("llm timeout", primary)
+                await self.hub.patch_status(phase="listening" if self.mic.listen_enabled else "idle")
+                return
         if not reply:
             await self.hub.patch_status(phase="listening" if self.mic.listen_enabled else "idle")
             return
         await self._emit_cohost(reply, thread=thread, speak=delivery == "speak" and self.settings.events_speak, post=self.settings.events_post_to_chat)
 
+    async def _bounded_complete(self, messages: list[dict[str, str]], temperature: float) -> str:
+        return await asyncio.wait_for(
+            self.llm.complete(messages, temperature=temperature),
+            timeout=self.settings.chat_timeout_seconds,
+        )
+
     async def _finish_reply(self, messages: list[dict[str, str]], *, temperature: float, retry: bool = True) -> str:
-        raw = await self.llm.complete(messages, temperature=temperature)
+        raw = await self._bounded_complete(messages, temperature)
         reply = self._clean(raw)
         if retry and (not reply or is_generic_filler(reply, self._banned_extra())):
-            raw = await self.llm.complete(
+            raw = await self._bounded_complete(
                 messages + [{"role": "user", "content": "shorter, messier, no greeting, no thank-you template."}],
-                temperature=min(1.0, temperature + 0.05),
+                min(1.0, temperature + 0.05),
             )
             reply = self._clean(raw)
         if not reply or is_generic_filler(reply, self._banned_extra()):
@@ -1431,10 +1482,11 @@ class Orchestrator:
             self._mark_reply(target.user)
             return
         action = chat_action(target, welcome_first_time=self.settings.welcome_first_time)
-        if action == "command" or target.command == "!so" or target.command in self.settings.mod_commands:
-            if target.command in self.settings.mod_commands and not self._can_run_mod_command(target):
-                await self._note_skip("not a mod", target.user)
-                return
+        command = (target.command or "").lower()
+        if command in self.settings.mod_commands and not self._can_run_mod_command(target):
+            await self._note_skip("not a mod", target.user)
+            return
+        if command == "!so":
             who = ""
             parts = target.text.split()
             if len(parts) > 1:
@@ -1449,6 +1501,9 @@ class Orchestrator:
             else:
                 self._last_shoutout_at = time.monotonic()
             self._mark_reply(target.user)
+            return
+        if action == "command":
+            await self._note_skip("unhandled command", target.user)
             return
         await self._decide_chat(target, action)
 
@@ -1725,14 +1780,21 @@ class Orchestrator:
         paragraph = ""
         if vibe:
             draft = build_recap(self.memory)
-            raw = await self.llm.complete(
-                [
-                    {"role": "system", "content": "Write one short paragraph about this stream. No headings."},
-                    {"role": "user", "content": draft or "Quiet stream."},
-                ],
-                temperature=0.7,
-            )
-            paragraph = (raw or "").strip()
+            try:
+                raw = await asyncio.wait_for(
+                    self.llm.complete(
+                        [
+                            {"role": "system", "content": "Write one short paragraph about this stream. No headings."},
+                            {"role": "user", "content": draft or "Quiet stream."},
+                        ],
+                        temperature=0.7,
+                    ),
+                    timeout=self.settings.chat_timeout_seconds,
+                )
+            except TimeoutError:
+                paragraph = ""
+            else:
+                paragraph = (raw or "").strip()
         text, path = write_recap(self.memory, self.data_dir / "recaps", vibe=paragraph)
         return {"markdown": text, "path": path.name}
 
@@ -1798,8 +1860,10 @@ class Orchestrator:
         while not self._stopping:
             try:
                 await asyncio.sleep(0.2)
-                if self.mic.listen_enabled or self.mic.ptt_down:
-                    wake = getattr(self.mic, "wake", None)
+                wake = getattr(self.mic, "wake", None)
+                wake_loaded = getattr(wake, "model", None) is not None
+                stream_open = getattr(self.mic, "_stream", None) is not None
+                if stream_open and (self.mic.listen_enabled or self.mic.ptt_down or wake_loaded):
                     score = float(getattr(self.mic, "wake_score", getattr(wake, "score", 0.0)) or 0.0)
                     await self.hub.broadcast(
                         {
