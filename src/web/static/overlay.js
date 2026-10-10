@@ -2,7 +2,20 @@ const phaseEl = document.getElementById("phase");
 const lineEl = document.getElementById("line");
 const nameEl = document.getElementById("name");
 const alertEl = document.getElementById("alert");
+const connEl = document.getElementById("conn");
+const q = new URLSearchParams(location.search);
+document.body.dataset.theme = q.get("theme") || "";
+document.body.dataset.position = q.get("position") || "bottom";
+const hideIdle = q.get("hide") === "idle";
+const holdMs = Math.max(1, Number(q.get("hold") || 6)) * 1000;
 let alertTimer = 0;
+
+if (hideIdle) document.body.classList.add("hide-idle");
+
+function setLive(phase) {
+  const live = phase && phase !== "idle";
+  document.body.classList.toggle("live", live || !hideIdle);
+}
 
 async function boot() {
   try {
@@ -20,28 +33,36 @@ function showAlert(text) {
   clearTimeout(alertTimer);
   alertTimer = setTimeout(() => {
     alertEl.hidden = true;
-  }, 6000);
+  }, holdMs);
 }
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => connEl.classList.remove("off");
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "status") {
       const st = msg.data || {};
-      phaseEl.textContent = st.phase || "idle";
-      phaseEl.className = "pill " + (st.phase || "idle");
+      const phase = st.phase || "idle";
+      phaseEl.textContent = phase;
+      phaseEl.className = "pill " + phase;
+      setLive(phase);
       if (st.persona) nameEl.textContent = st.persona;
+      if (st.speaking) nameEl.classList.add("speaking");
+      else nameEl.classList.remove("speaking");
       if (st.caption) lineEl.textContent = st.caption;
     } else if (msg.type === "transcript" && msg.data && msg.data.role === "cohost") {
-      lineEl.textContent = msg.data.text;
+      lineEl.textContent = msg.data.text || "";
     } else if (msg.type === "alert") {
       const d = msg.data || {};
       showAlert(d.text || `${d.kind || "alert"} ${d.user || ""}`.trim());
     }
   };
-  ws.onclose = () => setTimeout(connect, 1500);
+  ws.onclose = () => {
+    connEl.classList.add("off");
+    setTimeout(connect, 1500);
+  };
 }
 
 boot();

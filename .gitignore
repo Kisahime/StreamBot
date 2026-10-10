@@ -12,3 +12,4 @@ piper/
 *.log
 data/*
 !data/.gitkeep
+logs/

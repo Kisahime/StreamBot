@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import subprocess
 import sys
 import tempfile
+import time
 import wave
 import zipfile
 from pathlib import Path
-from urllib.request import urlopen, Request
+from urllib.request import Request, urlopen
 
 import numpy as np
 import sounddevice as sd
@@ -56,8 +58,15 @@ class PiperTTS:
         self.ready = False
         self.error: str | None = None
         self.speaking = False
+        self._proc: subprocess.Popen | None = None
+        self._json_input = True
 
     def ensure_files(self) -> None:
+        if sys.platform != "win32":
+            self.ready = False
+            self.error = "Piper setup is Windows-only (piper_windows_amd64). TTS will stay off on this OS."
+            log.error(self.error)
+            return
         self.piper_dir.mkdir(parents=True, exist_ok=True)
         exe = self.piper_dir / "piper" / "piper.exe"
         if not exe.exists():
@@ -99,6 +108,51 @@ class PiperTTS:
         except Exception:
             pass
 
+    def close(self) -> None:
+        proc = self._proc
+        self._proc = None
+        if proc is None:
+            return
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    def _spawn(self) -> subprocess.Popen | None:
+        if not self.exe or not self.model:
+            return None
+        creation = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0  # type: ignore[attr-defined]
+        cmd = [
+            str(self.exe),
+            "--model",
+            str(self.model),
+            "--json-input",
+            "--sentence_silence",
+            "0.12",
+            "--length_scale",
+            str(self.settings.tts_length_scale),
+        ]
+        try:
+            return subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=str(self.exe.parent),
+                creationflags=creation,
+            )
+        except Exception as e:
+            log.warning("long-lived Piper failed to start: %s", e)
+            return None
+
+    def _proc_alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None and self._json_input
+
     async def speak(self, text: str) -> None:
         text = (text or "").strip()
         if not text or not self.settings.tts_enabled or self.settings.tts_mute:
@@ -120,6 +174,66 @@ class PiperTTS:
                 self.speaking = False
 
     def _synth(self, text: str) -> tuple[np.ndarray, int]:
+        text = (text or "").strip()[: self.settings.max_sentence_chars]
+        if not text:
+            return np.zeros(0, dtype=np.float32), self.sample_rate
+        if self._json_input:
+            audio = self._synth_persistent(text)
+            if audio is not None:
+                return audio
+        return self._synth_oneshot(text)
+
+    def _synth_persistent(self, text: str) -> tuple[np.ndarray, int] | None:
+        if not self._proc_alive():
+            self._proc = self._spawn()
+        proc = self._proc
+        if proc is None or proc.stdin is None:
+            self._json_input = False
+            return None
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            out_path = tmp.name
+        try:
+            payload = json.dumps({"text": text, "output_file": out_path}) + "\n"
+            proc.stdin.write(payload.encode("utf-8"))
+            proc.stdin.flush()
+        except Exception as e:
+            log.warning("Piper stdin failed (%s); falling back to one-shot", e)
+            self._json_input = False
+            self.close()
+            return None
+        deadline = time.time() + 25
+        while time.time() < deadline:
+            if self._cancel.is_set():
+                return np.zeros(0, dtype=np.float32), self.sample_rate
+            if proc.poll() is not None:
+                err = ""
+                if proc.stderr:
+                    err = proc.stderr.read().decode("utf-8", errors="replace")[:300]
+                log.warning("Piper json-input exited (%s); using one-shot", err or proc.returncode)
+                self._json_input = False
+                self._proc = None
+                return None
+            if os.path.exists(out_path) and os.path.getsize(out_path) > 44:
+                time.sleep(0.05)
+                if os.path.getsize(out_path) > 44:
+                    try:
+                        return self._read_wav(out_path)
+                    finally:
+                        try:
+                            os.unlink(out_path)
+                        except OSError:
+                            pass
+            time.sleep(0.02)
+        log.warning("Piper json-input timed out; using one-shot")
+        self._json_input = False
+        self.close()
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+        return None
+
+    def _synth_oneshot(self, text: str) -> tuple[np.ndarray, int]:
         assert self.exe and self.model
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             out_path = tmp.name
@@ -148,25 +262,28 @@ class PiperTTS:
             if proc.returncode != 0:
                 log.error("piper failed: %s", proc.stderr.decode("utf-8", errors="replace"))
                 return np.zeros(0, dtype=np.float32), self.sample_rate
-            with wave.open(out_path, "rb") as wf:
-                sr = wf.getframerate()
-                n = wf.getnframes()
-                raw = wf.readframes(n)
-                ch = wf.getnchannels()
-                sw = wf.getsampwidth()
-            if sw == 2:
-                audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-            else:
-                audio = np.frombuffer(raw, dtype=np.uint8).astype(np.float32) / 255.0 - 0.5
-            if ch > 1:
-                audio = audio.reshape(-1, ch).mean(axis=1)
-            self.sample_rate = sr
-            return audio, sr
+            return self._read_wav(out_path)
         finally:
             try:
                 os.unlink(out_path)
             except OSError:
                 pass
+
+    def _read_wav(self, out_path: str) -> tuple[np.ndarray, int]:
+        with wave.open(out_path, "rb") as wf:
+            sr = wf.getframerate()
+            n = wf.getnframes()
+            raw = wf.readframes(n)
+            ch = wf.getnchannels()
+            sw = wf.getsampwidth()
+        if sw == 2:
+            audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        else:
+            audio = np.frombuffer(raw, dtype=np.uint8).astype(np.float32) / 255.0 - 0.5
+        if ch > 1:
+            audio = audio.reshape(-1, ch).mean(axis=1)
+        self.sample_rate = sr
+        return audio, sr
 
     def _play(self, audio: np.ndarray, sr: int) -> None:
         if self._cancel.is_set():

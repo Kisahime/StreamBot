@@ -7,6 +7,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
+
 from twitchio.ext import commands
 
 log = logging.getLogger("cohost.twitch")
@@ -29,6 +30,7 @@ class ChatLine:
     text: str
     at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     mention: bool = False
+    command: str = ""
 
     def render(self) -> str:
         return f"{self.user}: {self.text}"
@@ -46,6 +48,14 @@ def normalize_token(token: str) -> str:
     if not token.lower().startswith("oauth:"):
         token = f"oauth:{token}"
     return token
+
+
+def looks_like_auth_failure(text: str) -> bool:
+    low = (text or "").lower()
+    return any(
+        token in low
+        for token in ("login unsuccessful", "authentication", "invalid token", "oauth", "401", "403", "improperly formatted auth")
+    )
 
 
 def is_spammy(text: str) -> bool:
@@ -73,6 +83,8 @@ class TwitchChat:
         buffer_size: int = 40,
         bot_names: Optional[list[str]] = None,
         allow_from: Optional[list[str]] = None,
+        commands: Optional[list[str]] = None,
+        min_send_gap: float = 1.2,
     ) -> None:
         self.token = normalize_token(token)
         self.nick = nick
@@ -82,11 +94,19 @@ class TwitchChat:
         self.buffer: deque[ChatLine] = deque(maxlen=buffer_size)
         self.bot_names = {n.lower() for n in (bot_names or [nick]) if n}
         self.allow_from = {n.lower().lstrip("@") for n in (allow_from or []) if n}
+        self.commands = {c.lower() if c.startswith("!") else f"!{c.lower()}" for c in (commands or [])}
+        self.min_send_gap = min_send_gap
         self._bot: Optional[commands.Bot] = None
         self._task: Optional[asyncio.Task] = None
         self._ready = asyncio.Event()
         self._connect_error: Optional[str] = None
         self.connected = False
+        self.auth_failed = False
+        self._out: asyncio.Queue[str] = asyncio.Queue()
+        self._sender: Optional[asyncio.Task] = None
+
+    def set_allow_from(self, names: list[str]) -> None:
+        self.allow_from = {n.lower().lstrip("@") for n in names if n}
 
     def alive(self) -> bool:
         return bool(self.connected and self._task and not self._task.done())
@@ -118,7 +138,10 @@ class TwitchChat:
             async def event_error(inner_self, error: Exception, data: Optional[str] = None) -> None:
                 parent._connect_error = str(error)
                 log.error("Twitch error: %s %s", error, data or "")
-                await parent.on_status("error")
+                status = "token rejected" if looks_like_auth_failure(str(error)) else "error"
+                if status == "token rejected":
+                    parent.auth_failed = True
+                await parent.on_status(status)
                 parent._ready.set()
 
             async def event_message(inner_self, message) -> None:
@@ -128,14 +151,22 @@ class TwitchChat:
                 content = (message.content or "").strip()
                 if author.lower() in parent.bot_names and author.lower() not in parent.allow_from:
                     return
-                if is_spammy(content):
+                command = ""
+                if content.startswith("!"):
+                    command = content.split()[0].lower()
+                    if command not in parent.commands:
+                        return
+                elif is_spammy(content):
                     return
                 mention = any(n in content.lower() for n in parent.bot_names)
-                line = ChatLine(user=author, text=content, mention=mention)
+                line = ChatLine(user=author, text=content, mention=mention, command=command)
                 parent.buffer.append(line)
                 await parent.on_line(line)
 
+        self.auth_failed = False
         self._bot = Bot()
+        if self._sender is None or self._sender.done():
+            self._sender = asyncio.create_task(self._send_loop(), name="twitch-send")
         self._task = asyncio.create_task(self._bot.start(), name="twitch-irc")
         await self.on_status("connecting")
         try:
@@ -145,7 +176,10 @@ class TwitchChat:
             raise TimeoutError("Twitch IRC did not become ready in 20s. Check token, nick, and channel.")
         if not self.connected:
             err = self._connect_error or "Twitch login failed"
+            auth = looks_like_auth_failure(err)
             await self.disconnect()
+            if auth:
+                raise RuntimeError(f"token rejected: {err}")
             raise RuntimeError(err)
 
     async def disconnect(self) -> None:
@@ -163,9 +197,31 @@ class TwitchChat:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        if self._sender:
+            self._sender.cancel()
+            try:
+                await self._sender
+            except asyncio.CancelledError:
+                pass
+            self._sender = None
         await self.on_status("disconnected")
 
     async def send(self, text: str) -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+        await self._out.put(text[:500])
+
+    async def _send_loop(self) -> None:
+        while True:
+            text = await self._out.get()
+            try:
+                await self._send_now(text)
+            except Exception:
+                log.exception("chat send failed")
+            await asyncio.sleep(self.min_send_gap)
+
+    async def _send_now(self, text: str) -> None:
         if not self._bot or not text.strip():
             return
         channel = self._bot.get_channel(self.channel)

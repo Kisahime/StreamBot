@@ -24,6 +24,16 @@ class Hub:
             "last_user": "",
             "streamer_name": "",
             "streamer_login": "",
+            "persona": "",
+            "mood": "normal",
+            "stt_ready": False,
+            "tts_ready": False,
+            "skip": {"reason": "", "user": ""},
+            "timings": {},
+            "queue": {"chat": [], "alerts": []},
+            "twitch_error": "",
+            "eventsub_error": "",
+            "duck": "off",
         }
 
     async def register(self, ws: WebSocket) -> None:

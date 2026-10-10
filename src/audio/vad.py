@@ -5,7 +5,7 @@ import numpy as np
 _AVAILABLE = False
 
 try:
-    from faster_whisper.vad import get_speech_timestamps, VadOptions
+    from faster_whisper.vad import VadOptions, get_speech_timestamps
 
     _AVAILABLE = True
 except Exception:

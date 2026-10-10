@@ -90,6 +90,11 @@ Chat still works if EventSub fails (wrong Client ID, missing scopes, bot token u
    - Width ~1280, height ~300
    - Enable **Shutdown source when not visible** off while live
    - Enable **Transparent background** (Custom CSS can be `body { background-color: rgba(0,0,0,0); margin: 0; }`)
+   - Optional query: `?theme=minimal&position=bottom&hide=idle&hold=6` (`position` can be `top` or `center`)
+
+Pixel's spoken audio can go to a virtual cable (VB-Audio, VoiceMeeter). The device list labels those outputs; pick one in the booth. The default output is not changed until you pick it.
+
+Music ducking is off. Preferred setup: music on its own OBS track, sidechained to the cohost cable. `audio.duck_enabled: true` lowers the Windows output endpoint while Pixel talks if `pycaw` is installed; otherwise the booth keeps the OBS sidechain note.
 
 Edit `persona.yaml` anytime, then click **Reload persona**. No restart needed.
 
@@ -97,7 +102,16 @@ Set your **display name** and **Twitch login** in the booth so Pixel knows mic a
 
 ## 8 GB VRAM tips
 
-Default `config.yaml` split:
+`vram.profile` in `config.yaml` is the switch:
+
+| Profile | Whisper | LLM |
+|---|---|---|
+| `snappy` (default) | CUDA when available, else CPU | `qwen2.5:3b` |
+| `quality` | forced to CPU | `qwen2.5:7b-instruct-q4_K_M` if you were still on the 3B default |
+
+The booth warns when GPU memory used crosses `vram.warn_mb` (7000). On the snappy profile that warning means: set `vram.profile: quality` or `whisper.device: cpu`.
+
+Default split:
 
 | Piece | Where | Notes |
 |---|---|---|
@@ -134,14 +148,14 @@ Then: `ollama pull qwen2.5:7b-instruct-q4_K_M`
 ## How hybrid chat works
 
 - Your mic always wins: a new streamer utterance interrupts pending chat speech.
-- Chat lines that are commands (`!foo`), link-only, or from the bot itself are ignored.
-- Mentions, greetings, and questions are answered promptly (and often spoken).
-- Replies to a specific viewer are posted as `@username …`. TTS speaks the name without the @.
+- Link-only lines and the bot's own messages are ignored. The only commands that get through are `!so`, `!pixel`, and `!ask`.
+- Mentions, greetings, and questions are spoken. Other chat is typed only.
+- Replies to a specific viewer are posted as `@username …`. TTS speaks the name without the @, and strips links and emotes.
 - Conversation memory is per person: the streamer (mic + their Twitch login) vs each chatter. Set **Display name** and **Twitch login** on the dashboard. Stored in `data/streamer.json`. **Clear memory** resets threads.
 - Follows, new subs, resubs, gifted subs, and incoming raids can be announced (EventSub). Follows are batched so a follow train is one line. Gift bombs are one thank-you, not twenty. Alerts wait if you are talking on mic.
 - Other chat is sampled on an interval with a global cooldown plus a per-user cooldown.
 - Twitch IRC auto-reconnects if the socket drops. EventSub reconnects separately; chat still works if EventSub is missing scopes.
-- Mentions, greetings, and questions are answered promptly (and often spoken). Chat vs speak is decided in code, not by asking the model for JSON.
+- Mentions, greetings, questions, and `!pixel` / `!ask` are spoken. Ambient chat is typed only. `!so` shouts out the last raider. Other `!` commands stay ignored. Chat vs speak is decided in code, not by asking the model for JSON.
 
 Voice replies can be echoed to chat (`chat.post_voice_replies_to_chat`). Edit `persona.yaml` for Pixel's voice; **Reload persona** picks it up without a restart.
 
@@ -154,6 +168,12 @@ Voice replies can be echoed to chat (`chat.post_voice_replies_to_chat`). Edit `p
 - **Whisper CUDA failed** / **`cublas64_12.dll` not found**: the NVIDIA *driver* is not the CUDA 12 math libraries. Re-run `start.bat` so it installs `nvidia-cublas-cu12` (and friends) into the venv. If a brand-new GPU (RTX 50-series) still errors, the app will retry Whisper on CPU; you can also set `whisper.device: cpu` in `config.yaml`.
 - **Piper missing**: delete `models/piper` and restart so it re-downloads.
 
-## Out of scope (for now)
+## Optional, off by default
 
-No avatar/lip-sync, no wake word, no bits/channel-points/hype-train, no auto music ducking. Overlay is captions, status, and a short alert flash.
+In `config.yaml`: `events.bits`, `events.channel_points`, `events.hype_train`, `events.polls`, `events.predictions`, `audio.wake_word`, `audio.duck_enabled`. Wake word needs `openwakeword` and never replaces hold-to-talk. Channel-point reward titles map to `speak`, `chat`, or `ignore`.
+
+`start.bat` reads `server.host` and `server.port`, skips pip when `requirements.txt` has not changed, and opens the booth unless you pass `--no-browser`. Binding anything other than localhost requires `server.allow_remote: true`.
+
+## Out of scope
+
+No avatar/lip-sync, no cloud models, no auto timeouts or bans. Overlay is captions, a speaking nameplate, and an alert flash.

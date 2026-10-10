@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import sounddevice as sd
+
+_CABLE = re.compile(r"cable|vb-audio|voicemeeter|blackhole|virtual audio|vb cable", re.I)
 
 
 def list_devices() -> dict[str, list[dict[str, Any]]]:
@@ -17,6 +20,7 @@ def list_devices() -> dict[str, list[dict[str, Any]]]:
             "in": int(dev["max_input_channels"]),
             "out": int(dev["max_output_channels"]),
             "rate": float(dev["default_samplerate"]),
+            "cable": bool(_CABLE.search(str(dev["name"]))),
         }
         if item["in"] > 0:
             inputs.append(item)

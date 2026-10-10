@@ -117,7 +117,25 @@ button.held { background: #3a2218; border-color: #ffb38a; }
 .person strong { display: block; font-size: 13px; }
 .person span { color: var(--muted); font-size: 12px; text-transform: none; letter-spacing: 0; }
 .person .tag { color: var(--accent); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+.field select, .persona {
+  border: 1px solid var(--line);
+  background: #0b1018;
+  color: var(--text);
+  border-radius: 10px;
+  padding: 9px 11px;
+  font: 15px/1.4 "Segoe UI", system-ui, sans-serif;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.persona { width: 100%; min-height: 220px; resize: vertical; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+.check { display: flex; gap: 8px; align-items: center; color: var(--muted); margin: 8px 0; text-transform: none; letter-spacing: 0; font-size: 14px; }
+.meter { height: 8px; border-radius: 99px; background: #0b1018; border: 1px solid var(--line); overflow: hidden; margin-bottom: 10px; }
+.meter span { display: block; height: 100%; width: 0%; background: var(--accent); }
+.keys { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.speaking-pulse { box-shadow: 0 0 0 1px #ffa198; }
 @media (max-width: 800px) {
   .grid { grid-template-columns: 1fr; }
   .top { flex-direction: column; align-items: flex-start; }
+  button { padding: 16px 14px; font-size: 17px; }
+  .row { flex-direction: column; }
 }

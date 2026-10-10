@@ -1,12 +1,21 @@
 server:
   host: 127.0.0.1
   port: 8080
+  # The booth has no auth. Stay on localhost unless you set this true on purpose.
+  allow_remote: false
 
 ollama:
   host: http://127.0.0.1:11434
-  # 8 GB default: snappy. Switch to qwen2.5:7b-instruct-q4_K_M if Whisper is on CPU.
+  # snappy profile keeps this 3B model. quality profile switches a 3B default to the 7B below.
   model: qwen2.5:3b
   timeout_seconds: 120
+
+# snappy: Whisper on CUDA + qwen2.5:3b (fits an 8 GB GPU with Whisper).
+# quality: forces Whisper onto CPU and, if the model is still the 3B default, uses the 7B.
+vram:
+  profile: snappy
+  warn_mb: 7000
+  quality_model: qwen2.5:7b-instruct-q4_K_M
 
 whisper:
   model_size: small
@@ -24,6 +33,10 @@ tts:
   length_scale: 1.05
   piper_dir: models/piper
   max_sentence_chars: 280
+  voices:
+    - en_US-amy-medium
+    - en_US-kristin-medium
+    - en_US-hfc_female-medium
 
 audio:
   sample_rate: 16000
@@ -33,6 +46,11 @@ audio:
   min_utterance_ms: 350
   energy_threshold: 0.012   # RMS; raise if it false-triggers
   max_utterance_seconds: 20
+  # Optional. Off by default. Needs pycaw to duck the Windows output; otherwise use an OBS sidechain.
+  duck_enabled: false
+  duck_gain: 0.25
+  # Local wake word via openwakeword. Off by default, and never the only way to talk.
+  wake_word: false
 
 chat:
   buffer_size: 40
@@ -44,6 +62,12 @@ chat:
   chat_max_chars: 200
   per_user_cooldown_seconds: 20
   auto_reconnect: true
+  min_send_gap_seconds: 1.2
+  ambient_context_lines: 6
+  commands:
+    - "!so"
+    - "!pixel"
+    - "!ask"
 
 memory:
   spoken_turns: 8
@@ -51,6 +75,7 @@ memory:
   events: 80
   viewers: 48
   thread_turns: 12
+  catchphrase_seconds: 600
 
 events:
   enabled: true
@@ -58,3 +83,14 @@ events:
   follow_batch_seconds: 8
   speak: true
   post_to_chat: true
+  # Each of these is off until you turn it on. Missing scopes fail that subscription only.
+  bits: true
+  channel_points: true
+  hype_train: true
+  polls: true
+  predictions: true
+  channel_point_rewards:
+    hydrate: speak
+
+overlay:
+  alert_hold_seconds: 6

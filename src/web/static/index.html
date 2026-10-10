@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Local Twitch Cohost</title>
-  <link rel="stylesheet" href="/static/app.css?v=6" />
+  <link rel="stylesheet" href="/static/app.css?v=7" />
 </head>
 <body>
   <div class="app">
@@ -27,13 +27,15 @@
           <button id="muteBtn">Mute voice</button>
           <button id="stopBtn">Stop speaking</button>
         </div>
-        <div class="row">
-          <button id="twitchBtn">Connect Twitch</button>
-          <button id="personaBtn">Reload persona</button>
-        </div>
-        <div class="row">
-          <button id="clearMemBtn">Clear memory</button>
-        </div>
+        <div class="meter" aria-hidden="true"><span id="meter"></span></div>
+        <label class="field">Mood
+          <select id="mood">
+            <option value="chill">chill</option>
+            <option value="normal" selected>normal</option>
+            <option value="hype">hype</option>
+          </select>
+        </label>
+        <label class="check"><input id="postVoice" type="checkbox" checked /> Post voice replies to chat</label>
         <h2 class="dev-title">Streamer</h2>
         <label class="field">Display name
           <input id="streamerName" type="text" placeholder="Luna" autocomplete="off" />
@@ -45,13 +47,65 @@
           <button id="saveStreamerBtn">Save identity</button>
         </div>
         <p class="hint" id="hint"></p>
+        <p class="keys">Space talk · M mute · Esc stop · L listen</p>
       </article>
 
       <article class="panel status">
         <h2>Systems</h2>
         <ul id="sysList" class="sys"></ul>
-        <h2 class="dev-title">Audio devices</h2>
-        <p class="hint devices" id="deviceList">Loading devices…</p>
+        <p class="hint" id="timingLine"></p>
+        <h2 class="dev-title">Twitch</h2>
+        <p class="hint" id="ircLine">IRC: disconnected</p>
+        <p class="hint" id="eventLine">EventSub: disconnected</p>
+        <div class="row">
+          <button id="twitchBtn">Connect chat</button>
+          <button id="eventBtn">Connect alerts</button>
+        </div>
+        <div class="row">
+          <button id="shoutoutBtn">Shout out last raider</button>
+          <button id="markerBtn">Remember this</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Audio</h2>
+        <label class="field">Microphone
+          <select id="micSelect"><option value="">system default</option></select>
+        </label>
+        <label class="field">Speaker
+          <select id="spkSelect"><option value="">system default</option></select>
+        </label>
+        <label class="field">Language
+          <select id="langSelect">
+            <option value="en">en</option>
+            <option value="es">es</option>
+            <option value="fr">fr</option>
+            <option value="de">de</option>
+            <option value="pt">pt</option>
+            <option value="ja">ja</option>
+          </select>
+        </label>
+        <label class="field">Voice
+          <select id="voiceSelect"></select>
+        </label>
+        <label class="field">Silence end (ms) <span id="silenceVal"></span>
+          <input id="silence" type="range" min="200" max="2000" step="50" />
+        </label>
+        <label class="field">Energy <span id="energyVal"></span>
+          <input id="energy" type="range" min="0.002" max="0.08" step="0.001" />
+        </label>
+        <label class="field">Max utterance (s) <span id="maxVal"></span>
+          <input id="maxUtter" type="range" min="4" max="30" step="1" />
+        </label>
+        <label class="check"><input id="duck" type="checkbox" /> Duck output while speaking</label>
+        <p class="hint" id="duckNote"></p>
+      </article>
+      <article class="panel">
+        <h2>Queue</h2>
+        <div id="queueLog" class="log"></div>
+        <p class="hint" id="skipLine"></p>
       </article>
     </section>
 
@@ -60,6 +114,19 @@
         <h2>On air</h2>
         <p class="you" id="lastUser">Waiting for the streamer…</p>
         <p class="caption" id="caption">—</p>
+        <label class="field">Say this
+          <input id="sayText" type="text" placeholder="a line to speak, no model" autocomplete="off" />
+        </label>
+        <div class="row">
+          <button id="sayBtn">Speak</button>
+          <button id="sayChatBtn">Speak and post</button>
+        </div>
+        <label class="field">Pretend I said
+          <input id="pretendText" type="text" placeholder="runs the mic path" autocomplete="off" />
+        </label>
+        <div class="row">
+          <button id="pretendBtn">Send as mic</button>
+        </div>
       </article>
       <article class="panel chat-card">
         <h2>Chat buffer</h2>
@@ -83,11 +150,21 @@
       </article>
     </section>
 
+    <section class="panel">
+      <h2>Persona</h2>
+      <textarea id="personaText" class="persona" spellcheck="false"></textarea>
+      <div class="row">
+        <button id="personaSave">Save persona</button>
+        <button id="personaBtn">Reload persona</button>
+        <button id="clearMemBtn">Clear memory</button>
+      </div>
+    </section>
+
     <section class="panel log-card">
       <h2>Log</h2>
       <div id="eventLog" class="log"></div>
     </section>
   </div>
-  <script src="/static/app.js?v=6"></script>
+  <script src="/static/app.js?v=10"></script>
 </body>
 </html>

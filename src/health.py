@@ -95,18 +95,49 @@ async def snapshot(settings: Settings, orch) -> dict[str, Any]:
         },
         "memory": orch.memory.snapshot(),
         "devices": _devices_cache,
-        "setup": _setup_hints(ollama, settings),
+        "setup": _setup_hints(ollama, settings, gpu),
+        "vram": {
+            "profile": settings.vram_profile,
+            "warn_mb": settings.vram_warn_mb,
+            "snappy": "Whisper CUDA + qwen2.5:3b",
+            "quality": "Whisper CPU + qwen2.5:7b-instruct-q4_K_M",
+        },
+        "timings": getattr(orch, "timings", {}),
+        "duck": orch.duck.status() if getattr(orch, "duck", None) else {"mode": "off", "note": ""},
+        "wake": orch.mic.wake.status() if getattr(orch, "mic", None) else {"enabled": False},
+        "mood": getattr(orch, "mood", "normal"),
+        "voices": list(settings.tts_voices),
+        "voice": settings.tts_voice,
+        "language": settings.whisper_language,
+        "vad": {
+            "silence_ms": settings.silence_ms,
+            "energy_threshold": settings.energy_threshold,
+            "max_utterance_seconds": settings.max_utterance_seconds,
+        },
+        "audio": {
+            "mic_device": settings.mic_device,
+            "speaker_device": settings.speaker_device,
+        },
     }
 
 
-def _setup_hints(ollama: dict[str, Any], settings: Settings) -> list[str]:
+def _setup_hints(ollama: dict[str, Any], settings: Settings, gpu: dict[str, Any] | None = None) -> list[str]:
     hints: list[str] = []
+    hints.extend(settings.secret_hints())
     if not ollama.get("ok"):
         hints.append("Ollama is not reachable. Install it from https://ollama.com and keep it running.")
     elif not ollama.get("has_model"):
-        hints.append(f'Pull the default model:  ollama pull {settings.ollama_model}')
-    if not settings.twitch_token:
-        hints.append("Copy .env.example to .env and add a Twitch chat token.")
-    if settings.events_enabled and not settings.twitch_client_id:
-        hints.append("Add TWITCH_CLIENT_ID (and optional TWITCH_EVENT_TOKEN) for follows/subs/raids.")
+        hints.append(f"Pull the model:  ollama pull {settings.ollama_model}")
+    if gpu and gpu.get("ok"):
+        used = int(gpu.get("memory_used_mb") or 0)
+        if used >= settings.vram_warn_mb:
+            if settings.vram_profile == "quality":
+                hints.append(
+                    f"VRAM {used} MB is over {settings.vram_warn_mb}. Quality profile is already Whisper-on-CPU + 7B. Close other GPU apps."
+                )
+            else:
+                hints.append(
+                    f"VRAM {used} MB is over {settings.vram_warn_mb}. "
+                    "Switch vram.profile to quality (Whisper on CPU + 7B) or set whisper.device: cpu."
+                )
     return hints

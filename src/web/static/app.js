@@ -5,7 +5,9 @@ const pttBtn = $("pttBtn");
 const muteBtn = $("muteBtn");
 const stopBtn = $("stopBtn");
 const twitchBtn = $("twitchBtn");
+const eventBtn = $("eventBtn");
 const personaBtn = $("personaBtn");
+const personaSave = $("personaSave");
 const clearMemBtn = $("clearMemBtn");
 const saveStreamerBtn = $("saveStreamerBtn");
 const streamerName = $("streamerName");
@@ -20,25 +22,52 @@ const chatLog = $("chatLog");
 const eventLog = $("eventLog");
 const alertLog = $("alertLog");
 const memLog = $("memLog");
+const queueLog = $("queueLog");
+const meter = $("meter");
 
 let listenOn = false;
 let muted = false;
 let twitchState = "disconnected";
+let eventState = "disconnected";
 let pttHeld = false;
 let streamerLabel = "Streamer";
 let selectedPerson = "streamer";
 let lastPeople = [];
+let devicesLoaded = false;
 
-function logLine(target, html) {
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+function logLine(target, text, className) {
+  if (!target) return;
   const p = document.createElement("p");
-  p.innerHTML = html;
+  if (className) {
+    p.appendChild(el("span", className, text));
+  } else {
+    p.textContent = text;
+  }
+  target.prepend(p);
+  while (target.children.length > 80) target.removeChild(target.lastChild);
+}
+
+function logParts(target, parts) {
+  if (!target) return;
+  const p = document.createElement("p");
+  for (const part of parts) {
+    if (part.cls) p.appendChild(el("span", part.cls, part.text));
+    else p.appendChild(document.createTextNode(part.text));
+  }
   target.prepend(p);
   while (target.children.length > 80) target.removeChild(target.lastChild);
 }
 
 function setPhase(phase) {
   phasePill.textContent = phase || "idle";
-  phasePill.className = "phase " + (phase || "idle");
+  phasePill.className = "phase " + (phase || "idle") + (phase === "speaking" ? " speaking-pulse" : "");
 }
 
 async function defPost(url, body) {
@@ -52,18 +81,24 @@ async function defPost(url, body) {
   return data;
 }
 
+function typingInField() {
+  const tag = (document.activeElement && document.activeElement.tagName) || "";
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
 listenBtn.addEventListener("click", async () => {
-  listenOn = !listenOn;
-  await defPost("/api/listen", { enabled: listenOn });
-  listenBtn.textContent = listenOn ? "Stop listening" : "Start listening";
-  listenBtn.classList.toggle("active", listenOn);
+  try {
+    await defPost("/api/listen", { enabled: !listenOn });
+  } catch (e) {
+    hint.textContent = String(e.message || e);
+  }
 });
 
 function ptt(down) {
   if (pttHeld === down) return;
   pttHeld = down;
   pttBtn.classList.toggle("held", down);
-  defPost("/api/ptt", { down }).catch((e) => logLine(eventLog, `<span class="warn">${e}</span>`));
+  defPost("/api/ptt", { down }).catch((e) => logLine(eventLog, String(e.message || e), "warn"));
 }
 pttBtn.addEventListener("mousedown", () => ptt(true));
 pttBtn.addEventListener("mouseup", () => ptt(false));
@@ -71,47 +106,80 @@ pttBtn.addEventListener("mouseleave", () => ptt(false));
 pttBtn.addEventListener("touchstart", (e) => { e.preventDefault(); ptt(true); }, { passive: false });
 pttBtn.addEventListener("touchend", () => ptt(false));
 window.addEventListener("keydown", (e) => {
-  if (e.code !== "Space" || e.repeat) return;
-  const tag = (e.target && e.target.tagName) || "";
-  if (tag === "INPUT" || tag === "TEXTAREA") return;
-  e.preventDefault();
-  ptt(true);
+  if (typingInField() || e.repeat) return;
+  if (e.code === "Space") {
+    e.preventDefault();
+    ptt(true);
+  } else if (e.key === "m" || e.key === "M") {
+    muteBtn.click();
+  } else if (e.key === "Escape") {
+    stopBtn.click();
+  } else if (e.key === "l" || e.key === "L") {
+    listenBtn.click();
+  }
 });
 window.addEventListener("keyup", (e) => {
-  if (e.code === "Space") ptt(false);
+  if (e.code === "Space" && !typingInField()) ptt(false);
 });
 
 muteBtn.addEventListener("click", async () => {
-  muted = !muted;
-  await defPost("/api/tts/mute", { mute: muted });
-  muteBtn.textContent = muted ? "Unmute voice" : "Mute voice";
-  muteBtn.classList.toggle("active", muted);
+  await defPost("/api/tts/mute", { mute: !muted });
 });
-
 stopBtn.addEventListener("click", () => defPost("/api/interrupt", {}));
 
 twitchBtn.addEventListener("click", async () => {
   try {
-    if (twitchState === "connected" || twitchState === "connecting") {
-      await defPost("/api/twitch/disconnect", {});
-    } else {
-      await defPost("/api/twitch/connect", {});
-    }
+    const on = twitchState === "connected" || twitchState === "connecting" || twitchState === "reconnecting";
+    await defPost("/api/twitch/irc", { enabled: !on });
   } catch (e) {
     hint.textContent = String(e.message || e);
-    logLine(eventLog, `<span class="warn">${e}</span>`);
+    logLine(eventLog, String(e.message || e), "warn");
   }
+});
+
+eventBtn.addEventListener("click", async () => {
+  try {
+    const on = eventState === "connected" || eventState === "connecting" || eventState === "reconnecting";
+    await defPost("/api/twitch/events", { enabled: !on });
+  } catch (e) {
+    hint.textContent = String(e.message || e);
+    logLine(eventLog, String(e.message || e), "warn");
+  }
+});
+
+$("shoutoutBtn").addEventListener("click", async () => {
+  try {
+    await defPost("/api/twitch/shoutout", {});
+    hint.textContent = "Shoutout sent.";
+  } catch (e) {
+    hint.textContent = String(e.message || e);
+  }
+});
+
+$("markerBtn").addEventListener("click", async () => {
+  const data = await defPost("/api/marker", { note: "clip moment" });
+  hint.textContent = data.marker_error ? `Noted. Marker: ${data.marker_error}` : "Moment noted.";
 });
 
 personaBtn.addEventListener("click", async () => {
   const data = await defPost("/api/persona/reload", {});
   hint.textContent = `Persona reloaded: ${data.name || "ok"}`;
+  await loadPersona();
+});
+
+personaSave.addEventListener("click", async () => {
+  try {
+    const data = await defPost("/api/persona", { text: $("personaText").value });
+    hint.textContent = `Persona saved: ${data.name || "ok"}`;
+  } catch (e) {
+    hint.textContent = String(e.message || e);
+  }
 });
 
 clearMemBtn.addEventListener("click", async () => {
   await defPost("/api/memory/clear", {});
-  if (memLog) memLog.innerHTML = "";
-  if (peopleList) peopleList.innerHTML = "";
+  if (memLog) memLog.textContent = "";
+  if (peopleList) peopleList.textContent = "";
   hint.textContent = "Conversation memory cleared.";
 });
 
@@ -124,6 +192,35 @@ saveStreamerBtn.addEventListener("click", async () => {
   hint.textContent = `Pixel will treat ${streamerLabel} as the streamer.`;
 });
 
+$("mood").addEventListener("change", async () => {
+  try {
+    await defPost("/api/mood", { mood: $("mood").value });
+  } catch (e) {
+    hint.textContent = String(e.message || e);
+  }
+});
+
+$("postVoice").addEventListener("change", () => {
+  defPost("/api/chat/post_voice", { enabled: $("postVoice").checked }).catch((e) => {
+    hint.textContent = String(e.message || e);
+  });
+});
+
+$("sayBtn").addEventListener("click", () => speakBox(false));
+$("sayChatBtn").addEventListener("click", () => speakBox(true));
+async function speakBox(post) {
+  const text = $("sayText").value.trim();
+  if (!text) return;
+  await defPost("/api/say", { text, post_chat: post });
+  $("sayText").value = "";
+}
+$("pretendBtn").addEventListener("click", async () => {
+  const text = $("pretendText").value.trim();
+  if (!text) return;
+  await defPost("/api/pretend", { text });
+  $("pretendText").value = "";
+});
+
 function youLine(text) {
   return `You (${streamerLabel}): ${text}`;
 }
@@ -131,30 +228,33 @@ function youLine(text) {
 function renderPeople(snap) {
   lastPeople = (snap && snap.people) || [];
   if (!peopleList) return;
-  peopleList.innerHTML = lastPeople.map((p) => {
-    const id = p.id || "";
-    const tag = p.is_streamer ? '<span class="tag">streamer</span>' : "";
+  peopleList.textContent = "";
+  if (!lastPeople.length) {
+    peopleList.appendChild(el("p", "hint", "No conversations yet."));
+    return;
+  }
+  for (const p of lastPeople) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "person" + ((p.id || "") === selectedPerson ? " active" : "");
+    if (p.is_streamer) btn.appendChild(el("span", "tag", "streamer "));
+    btn.appendChild(el("strong", "", p.name || ""));
     const last = (p.last_said || p.last_reply || "").slice(0, 90);
-    const active = id === selectedPerson ? " active" : "";
-    return `<button type="button" class="person${active}" data-id="${id}">${tag}<strong>${p.name}</strong><span>${last || "—"}</span></button>`;
-  }).join("") || '<p class="hint">No conversations yet.</p>';
-  peopleList.querySelectorAll(".person").forEach((btn) => {
+    btn.appendChild(el("span", "", last || "—"));
     btn.addEventListener("click", () => {
-      selectedPerson = btn.getAttribute("data-id") || "streamer";
-      const person = lastPeople.find((p) => p.id === selectedPerson);
-      renderThread(person);
+      selectedPerson = p.id || "streamer";
+      renderThread(p);
       renderPeople(snap);
     });
-  });
+    peopleList.appendChild(btn);
+  }
 }
 
 function renderThread(person) {
   if (!memLog) return;
-  memLog.innerHTML = "";
+  memLog.textContent = "";
   const lines = (person && person.thread) || [];
-  for (const line of lines.slice().reverse()) {
-    logLine(memLog, `<span class="mem">${line}</span>`);
-  }
+  for (const line of lines.slice().reverse()) logLine(memLog, line, "mem");
 }
 
 function renderMemory(snap) {
@@ -165,36 +265,113 @@ function renderMemory(snap) {
   renderThread(person);
 }
 
+function fillSelect(select, options, current, emptyLabel) {
+  const value = select.value;
+  select.textContent = "";
+  if (emptyLabel != null) {
+    const blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = emptyLabel;
+    select.appendChild(blank);
+  }
+  for (const opt of options) {
+    const node = document.createElement("option");
+    node.value = String(opt.value);
+    node.textContent = opt.label;
+    select.appendChild(node);
+  }
+  const want = current == null ? "" : String(current);
+  select.value = [...select.options].some((o) => o.value === want) ? want : (value || "");
+}
+
 function renderSys(health) {
   const gpu = health.gpu || {};
   const ollama = health.ollama || {};
   const whisper = health.whisper || {};
   const tts = health.tts || {};
   const twitch = health.twitch || {};
+  const vram = health.vram || {};
   const rows = [
     ["GPU", gpu.ok ? `${gpu.name} · ${gpu.memory_used_mb}/${gpu.memory_total_mb} MB` : (gpu.error || "not found")],
+    ["VRAM", `${vram.profile || "snappy"} · warn ${vram.warn_mb || "?"} MB`],
     ["Ollama", ollama.ok ? `${ollama.model}${ollama.has_model ? "" : " (pull needed)"}` : (ollama.error || "down")],
     ["Whisper", whisper.loaded ? `${whisper.model} @ ${whisper.device}` : (whisper.error || "not loaded")],
     ["Piper TTS", tts.ready ? "ready" : (tts.error || "not ready")],
-    ["Twitch", `${twitch.state || "disconnected"} · #${twitch.channel || "?"} as ${twitch.nick || "?"}`],
-    ["EventSub", twitch.eventsub || "disconnected"],
-    ["Persona", health.persona || "—"],
-    ["Streamer", (health.streamer && (health.streamer.spoken_name || health.streamer.display_name)) || "—"],
+    ["Duck", (health.duck && health.duck.mode) || "off"],
+    ["Wake", health.wake && health.wake.enabled ? (health.wake.ready ? "ready" : (health.wake.reason || "off")) : "off"],
   ];
-  if (sysList) sysList.innerHTML = rows.map(([k, v]) => `<li><strong>${k}</strong><span>${v}</span></li>`).join("");
-  const hints = health.setup || [];
-  if (hints.length && hint) hint.textContent = hints[0];
-  const deviceList = $("deviceList");
-  if (!deviceList) return;
-  const devices = health.devices || {};
-  if (devices.error) {
-    deviceList.textContent = devices.error;
-  } else {
-    const ins = (devices.inputs || []).slice(0, 8).map((d) => `#${d.index} ${d.name}`).join("\n") || "(none)";
-    const outs = (devices.outputs || []).slice(0, 8).map((d) => `#${d.index} ${d.name}`).join("\n") || "(none)";
-    deviceList.textContent =
-      `Mic default: ${devices.default_input}\n${ins}\n\nSpeaker default: ${devices.default_output}\n${outs}`;
+  if (sysList) {
+    sysList.textContent = "";
+    for (const [k, v] of rows) {
+      const li = document.createElement("li");
+      li.appendChild(el("strong", "", k));
+      li.appendChild(el("span", "", v));
+      sysList.appendChild(li);
+    }
   }
+  const hints = health.setup || [];
+  if (hints.length && hint && !hint.dataset.lock) hint.textContent = hints[0];
+  $("ircLine").textContent = `IRC: ${twitch.state || "disconnected"} · #${twitch.channel || "?"} as ${twitch.nick || "?"}`;
+  $("eventLine").textContent = `EventSub: ${twitch.eventsub || "disconnected"}`;
+  const timings = health.timings || {};
+  const bits = [];
+  if (timings.stt_ms != null) bits.push(`STT ${timings.stt_ms} ms`);
+  if (timings.first_token_ms != null) bits.push(`token ${timings.first_token_ms} ms`);
+  if (timings.first_audio_ms != null) bits.push(`audio ${timings.first_audio_ms} ms`);
+  if (timings.chat_send_ms != null) bits.push(`chat ${timings.chat_send_ms} ms`);
+  $("timingLine").textContent = bits.join(" · ");
+  if (health.mood && document.activeElement !== $("mood")) $("mood").value = health.mood;
+  if (health.language && document.activeElement !== $("langSelect")) $("langSelect").value = health.language;
+  if (!devicesLoaded && health.devices) {
+    const devices = health.devices;
+    const ins = (devices.inputs || []).map((d) => ({
+      value: d.index,
+      label: `#${d.index} ${d.name}${d.cable ? " · virtual cable" : ""}`,
+    }));
+    const outs = (devices.outputs || []).map((d) => ({
+      value: d.index,
+      label: `#${d.index} ${d.name}${d.cable ? " · virtual cable" : ""}`,
+    }));
+    fillSelect($("micSelect"), ins, health.audio && health.audio.mic_device, "system default");
+    fillSelect($("spkSelect"), outs, health.audio && health.audio.speaker_device, "system default");
+    devicesLoaded = true;
+  }
+  if (health.voices && !$("voiceSelect").options.length) {
+    fillSelect(
+      $("voiceSelect"),
+      health.voices.map((v) => ({ value: v, label: v })),
+      health.voice,
+      null,
+    );
+    $("voiceSelect").value = health.voice || "";
+  }
+  const vad = health.vad || {};
+  if (document.activeElement !== $("silence") && vad.silence_ms) {
+    $("silence").value = vad.silence_ms;
+    $("silenceVal").textContent = String(vad.silence_ms);
+  }
+  if (document.activeElement !== $("energy") && vad.energy_threshold) {
+    $("energy").value = vad.energy_threshold;
+    $("energyVal").textContent = Number(vad.energy_threshold).toFixed(3);
+  }
+  if (document.activeElement !== $("maxUtter") && vad.max_utterance_seconds) {
+    $("maxUtter").value = vad.max_utterance_seconds;
+    $("maxVal").textContent = String(vad.max_utterance_seconds);
+  }
+  if (health.duck && health.duck.note) $("duckNote").textContent = health.duck.note;
+}
+
+function renderQueue(queue) {
+  if (!queueLog || !queue) return;
+  queueLog.textContent = "";
+  const alerts = queue.alerts || [];
+  const chat = queue.chat || [];
+  if (!alerts.length && !chat.length) {
+    logLine(queueLog, "Queue is empty.");
+    return;
+  }
+  for (const alert of alerts) logParts(queueLog, [{ cls: "alert", text: alert.kind || "alert" }, { text: " " + (alert.text || "") }]);
+  for (const line of chat) logParts(queueLog, [{ cls: "u", text: line.user || "?" }, { text: " " + (line.text || "") }]);
 }
 
 async function refreshHealth() {
@@ -204,19 +381,7 @@ async function refreshHealth() {
     const health = await res.json();
     renderSys(health);
     const st = health.status || {};
-    setPhase(st.phase);
-    if (st.streamer_name) streamerLabel = st.streamer_name;
-    if (st.last_user) lastUser.textContent = youLine(st.last_user);
-    if (st.caption) caption.textContent = st.caption;
-    listenOn = !!st.listen;
-    muted = !!st.tts_mute;
-    twitchState = st.twitch || "disconnected";
-    listenBtn.textContent = listenOn ? "Stop listening" : "Start listening";
-    listenBtn.classList.toggle("active", listenOn);
-    muteBtn.textContent = muted ? "Unmute voice" : "Mute voice";
-    muteBtn.classList.toggle("active", muted);
-    twitchBtn.textContent = twitchState === "connected" ? "Disconnect Twitch" : "Connect Twitch";
-    if (health.memory) renderMemory(health.memory);
+    applyStatus(st);
     if (health.streamer && streamerName && streamerLogin && document.activeElement !== streamerName && document.activeElement !== streamerLogin) {
       if (!streamerName.value) streamerName.value = health.streamer.display_name || "";
       if (!streamerLogin.value) streamerLogin.value = health.streamer.twitch_login || "";
@@ -226,40 +391,111 @@ async function refreshHealth() {
   }
 }
 
+function applyStatus(st) {
+  setPhase(st.phase);
+  if (st.streamer_name) streamerLabel = st.streamer_name;
+  if (st.last_user) lastUser.textContent = youLine(st.last_user);
+  if (typeof st.caption === "string" && st.caption) caption.textContent = st.caption;
+  listenOn = !!st.listen;
+  muted = !!st.tts_mute;
+  twitchState = st.twitch || twitchState;
+  eventState = st.eventsub || eventState;
+  listenBtn.textContent = listenOn ? "Stop listening" : "Start listening";
+  listenBtn.classList.toggle("active", listenOn);
+  muteBtn.textContent = muted ? "Unmute voice" : "Mute voice";
+  muteBtn.classList.toggle("active", muted);
+  twitchBtn.textContent = twitchState === "connected" ? "Disconnect chat" : "Connect chat";
+  eventBtn.textContent = eventState === "connected" ? "Disconnect alerts" : "Connect alerts";
+  if (st.skip && st.skip.reason) {
+    $("skipLine").textContent = `Skipped: ${st.skip.reason}${st.skip.user ? " · " + st.skip.user : ""}`;
+  }
+  if (st.queue) renderQueue(st.queue);
+  if (st.mood && document.activeElement !== $("mood")) $("mood").value = st.mood;
+}
+
+function saveDevices() {
+  const mic = $("micSelect").value;
+  const spk = $("spkSelect").value;
+  defPost("/api/audio/devices", {
+    mic_device: mic === "" ? null : Number(mic),
+    speaker_device: spk === "" ? null : Number(spk),
+  }).catch((e) => { hint.textContent = String(e.message || e); });
+}
+$("micSelect").addEventListener("change", saveDevices);
+$("spkSelect").addEventListener("change", saveDevices);
+$("langSelect").addEventListener("change", () => {
+  defPost("/api/stt/language", { language: $("langSelect").value }).catch((e) => { hint.textContent = String(e.message || e); });
+});
+$("voiceSelect").addEventListener("change", () => {
+  if (!$("voiceSelect").value) return;
+  defPost("/api/tts/voice", { voice: $("voiceSelect").value }).then(() => {
+    hint.textContent = "Voice updated.";
+  }).catch((e) => { hint.textContent = String(e.message || e); });
+});
+
+let vadTimer = 0;
+function queueVad() {
+  $("silenceVal").textContent = $("silence").value;
+  $("energyVal").textContent = Number($("energy").value).toFixed(3);
+  $("maxVal").textContent = $("maxUtter").value;
+  clearTimeout(vadTimer);
+  vadTimer = setTimeout(() => {
+    defPost("/api/audio/vad", {
+      silence_ms: Number($("silence").value),
+      energy_threshold: Number($("energy").value),
+      max_utterance_seconds: Number($("maxUtter").value),
+    }).catch((e) => { hint.textContent = String(e.message || e); });
+  }, 250);
+}
+$("silence").addEventListener("input", queueVad);
+$("energy").addEventListener("input", queueVad);
+$("maxUtter").addEventListener("input", queueVad);
+$("duck").addEventListener("change", async () => {
+  const data = await defPost("/api/audio/duck", { enabled: $("duck").checked });
+  $("duckNote").textContent = data.note || "";
+});
+
+async function loadPersona() {
+  try {
+    const res = await fetch("/api/persona", { cache: "no-store" });
+    const data = await res.json();
+    if (document.activeElement !== $("personaText")) $("personaText").value = data.text || "";
+  } catch {
+    /* persona editor can stay empty */
+  }
+}
+
 function connectWs() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "status") {
-      const st = msg.data || {};
-      setPhase(st.phase);
-      if (st.last_user) lastUser.textContent = youLine(st.last_user);
-      if (st.streamer_name) streamerLabel = st.streamer_name;
-      if (typeof st.caption === "string" && st.caption) caption.textContent = st.caption;
-      listenOn = !!st.listen;
-      muted = !!st.tts_mute;
-      twitchState = st.twitch || twitchState;
-      twitchBtn.textContent = twitchState === "connected" ? "Disconnect Twitch" : "Connect Twitch";
+      applyStatus(msg.data || {});
+    } else if (msg.type === "level") {
+      const level = Math.min(1, Number(msg.data) || 0);
+      if (meter) meter.style.width = `${Math.round(level * 400)}%`;
     } else if (msg.type === "chat") {
       const d = msg.data || {};
-      const cls = d.bot ? "bot" : (d.streamer ? "u" : "u");
-      const label = d.streamer ? `${d.user} (streamer)` : (d.user || "Pixel");
-      logLine(chatLog, `<span class="${cls}">${label}</span> ${d.text}`);
+      const label = d.streamer ? `${d.user || ""} (streamer)` : (d.user || "Pixel");
+      logParts(chatLog, [{ cls: d.bot ? "bot" : "u", text: label }, { text: " " + (d.text || "") }]);
     } else if (msg.type === "alert") {
       const d = msg.data || {};
       const line = d.text || `${d.kind || "alert"} ${d.user || ""}`;
-      if (alertLog) logLine(alertLog, `<span class="alert">${d.kind || "alert"}</span> ${line}`);
-      logLine(eventLog, `<span class="alert">${d.kind || "alert"}</span> ${line}`);
+      logParts(alertLog, [{ cls: "alert", text: d.kind || "alert" }, { text: " " + line }]);
+      logParts(eventLog, [{ cls: "alert", text: d.kind || "alert" }, { text: " " + line }]);
     } else if (msg.type === "transcript") {
       const d = msg.data || {};
-      logLine(eventLog, `<span class="u">${d.role}</span> ${d.text}`);
-      if (d.role === "cohost") caption.textContent = d.text;
-      if (d.role === "streamer") lastUser.textContent = youLine(d.text);
+      logParts(eventLog, [{ cls: "u", text: d.role || "" }, { text: " " + (d.text || "") }]);
+      if (d.role === "cohost") caption.textContent = d.text || "";
+      if (d.role === "streamer") lastUser.textContent = youLine(d.text || "");
     } else if (msg.type === "memory") {
       renderMemory(msg.data);
+    } else if (msg.type === "skip") {
+      const d = msg.data || {};
+      $("skipLine").textContent = `Skipped: ${d.reason || ""}${d.user ? " · " + d.user : ""}`;
     } else if (msg.type === "log") {
-      logLine(eventLog, `<span class="warn">${msg.data}</span>`);
+      logLine(eventLog, String(msg.data || ""), "warn");
     }
   };
   ws.onclose = () => setTimeout(connectWs, 1500);
@@ -267,4 +503,5 @@ function connectWs() {
 
 refreshHealth();
 setInterval(refreshHealth, 8000);
+loadPersona();
 connectWs();

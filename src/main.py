@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,10 +14,10 @@ from pydantic import BaseModel, Field
 from src.audio.cuda_libs import ensure_cuda_dlls
 from src.health import snapshot
 from src.hub import Hub
+from src.logsetup import setup_logging
 from src.orchestrator import Orchestrator
-from src.settings import load_settings
+from src.settings import ROOT, assert_bind_allowed, load_settings
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("cohost")
 
 STATIC = Path(__file__).resolve().parent / "web" / "static"
@@ -39,11 +40,64 @@ class StreamerBody(BaseModel):
     twitch_login: str = ""
 
 
+class SayBody(BaseModel):
+    text: str = ""
+    post_chat: bool = True
+
+
+class PretendBody(BaseModel):
+    text: str = ""
+
+
+class PersonaBody(BaseModel):
+    text: str = ""
+
+
+class MoodBody(BaseModel):
+    mood: str = "normal"
+
+
+class VadBody(BaseModel):
+    silence_ms: int = 800
+    energy_threshold: float = 0.012
+    max_utterance_seconds: float = 20
+
+
+class DeviceBody(BaseModel):
+    mic_device: int | None = None
+    speaker_device: int | None = None
+
+
+class FlagBody(BaseModel):
+    enabled: bool
+
+
+class LanguageBody(BaseModel):
+    language: str = "en"
+
+
+class VoiceBody(BaseModel):
+    voice: str = ""
+
+
+class ShoutoutBody(BaseModel):
+    user: str = ""
+
+
+class MarkerBody(BaseModel):
+    note: str = ""
+
+
 def create_app() -> FastAPI:
     @asynccontextmanager
     async def life(app: FastAPI):
         ensure_cuda_dlls()
         settings = load_settings()
+        setup_logging([settings.twitch_token, settings.twitch_event_token, settings.event_token()])
+        bind = os.getenv("COHOST_BIND_HOST", settings.host)
+        assert_bind_allowed(bind, settings.allow_remote)
+        if settings.missing_secrets() and os.getenv("COHOST_SKIP_SECRET_CHECK") != "1":
+            raise RuntimeError(" ".join(settings.secret_hints()))
         hub = Hub()
         orch = Orchestrator(settings, hub)
         app.state.settings = settings
@@ -79,9 +133,15 @@ def create_app() -> FastAPI:
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
+    @app.get("/api/queue")
+    async def queue():
+        return app.state.orch.queue_snapshot()
+
     @app.post("/api/listen")
     async def listen(body: ListenBody):
-        await app.state.orch.set_listen(body.enabled)
+        ok = await app.state.orch.set_listen(body.enabled)
+        if body.enabled and not ok:
+            return JSONResponse({"ok": False, "error": "models are not ready"}, status_code=400)
         return {"ok": True, "listen": body.enabled}
 
     @app.post("/api/ptt")
@@ -94,15 +154,86 @@ def create_app() -> FastAPI:
         await app.state.orch.set_mute(body.mute)
         return {"ok": True, "mute": body.mute}
 
+    @app.post("/api/chat/post_voice")
+    async def post_voice(body: FlagBody):
+        app.state.orch.set_post_voice(body.enabled)
+        return {"ok": True, "enabled": body.enabled}
+
     @app.post("/api/interrupt")
     async def interrupt():
         await app.state.orch.interrupt()
         return {"ok": True}
 
+    @app.post("/api/say")
+    async def say(body: SayBody):
+        await app.state.orch.say_line(body.text, post_chat=body.post_chat)
+        return {"ok": True}
+
+    @app.post("/api/pretend")
+    async def pretend(body: PretendBody):
+        await app.state.orch.pretend(body.text)
+        return {"ok": True}
+
+    @app.get("/api/persona")
+    async def persona_get():
+        text = (ROOT / "persona.yaml").read_text(encoding="utf-8")
+        return {"text": text, "name": app.state.orch.persona.get("name")}
+
+    @app.post("/api/persona")
+    async def persona_save(body: PersonaBody):
+        try:
+            name = app.state.orch.save_persona_text(body.text)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        return {"ok": True, "name": name}
+
     @app.post("/api/persona/reload")
     async def persona_reload():
         app.state.orch.reload_persona()
         return {"ok": True, "name": app.state.orch.persona.get("name")}
+
+    @app.post("/api/mood")
+    async def mood(body: MoodBody):
+        try:
+            value = await app.state.orch.set_mood(body.mood)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        return {"ok": True, "mood": value}
+
+    @app.post("/api/audio/vad")
+    async def vad(body: VadBody):
+        await app.state.orch.set_vad(body.silence_ms, body.energy_threshold, body.max_utterance_seconds)
+        return {"ok": True}
+
+    @app.post("/api/audio/devices")
+    async def audio_devices(body: DeviceBody):
+        try:
+            await app.state.orch.set_devices(body.mic_device, body.speaker_device)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        return {"ok": True}
+
+    @app.post("/api/audio/duck")
+    async def duck(body: FlagBody):
+        await asyncio.to_thread(app.state.orch.set_duck, body.enabled)
+        return {"ok": True, "mode": app.state.orch.duck.mode, "note": app.state.orch.duck.note}
+
+    @app.post("/api/stt/language")
+    async def language(body: LanguageBody):
+        await app.state.orch.set_language(body.language)
+        return {"ok": True, "language": app.state.settings.whisper_language}
+
+    @app.get("/api/tts/voices")
+    async def voices():
+        return {"voices": app.state.settings.tts_voices, "current": app.state.settings.tts_voice}
+
+    @app.post("/api/tts/voice")
+    async def voice(body: VoiceBody):
+        try:
+            await app.state.orch.set_voice(body.voice)
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        return {"ok": True, "voice": app.state.settings.tts_voice, "ready": app.state.orch.tts.ready}
 
     @app.get("/api/streamer")
     async def streamer_get():
@@ -132,6 +263,11 @@ def create_app() -> FastAPI:
         app.state.orch.clear_memory()
         return {"ok": True}
 
+    @app.post("/api/marker")
+    async def marker(body: MarkerBody):
+        result = await app.state.orch.mark_moment(body.note)
+        return {"ok": True, **result}
+
     @app.post("/api/twitch/connect")
     async def twitch_connect():
         try:
@@ -140,10 +276,40 @@ def create_app() -> FastAPI:
         except Exception as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
+    @app.post("/api/twitch/irc")
+    async def twitch_irc(body: FlagBody):
+        try:
+            if body.enabled:
+                await app.state.orch.connect_irc()
+            else:
+                await app.state.orch.disconnect_irc()
+            return {"ok": True}
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    @app.post("/api/twitch/events")
+    async def twitch_events(body: FlagBody):
+        try:
+            if body.enabled:
+                await app.state.orch.connect_events()
+            else:
+                await app.state.orch.disconnect_events()
+            return {"ok": True}
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
     @app.post("/api/twitch/disconnect")
     async def twitch_disconnect():
         await app.state.orch.twitch_disconnect()
         return {"ok": True}
+
+    @app.post("/api/twitch/shoutout")
+    async def twitch_shoutout(body: ShoutoutBody):
+        try:
+            await app.state.orch.shoutout(body.user or None)
+            return {"ok": True}
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
     @app.websocket("/ws")
     async def ws(ws: WebSocket):

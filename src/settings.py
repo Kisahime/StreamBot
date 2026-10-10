@@ -9,6 +9,9 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
 
+QUALITY_MODEL = "qwen2.5:7b-instruct-q4_K_M"
+SNAPPY_MODEL = "qwen2.5:3b"
+
 
 def _get(data: dict[str, Any], path: str, default: Any = None) -> Any:
     cur: Any = data
@@ -19,16 +22,21 @@ def _get(data: dict[str, Any], path: str, default: Any = None) -> Any:
     return cur
 
 
+def is_loopback(host: str) -> bool:
+    return (host or "").strip().lower() in {"127.0.0.1", "localhost", "::1"}
+
+
 class Settings:
     def __init__(self, data: dict[str, Any]) -> None:
         self._data = data
         self.root = ROOT
 
-        self.host = _get(data, "server.host", "127.0.0.1")
+        self.host = str(_get(data, "server.host", "127.0.0.1"))
         self.port = int(_get(data, "server.port", 8080))
+        self.allow_remote = bool(_get(data, "server.allow_remote", False))
 
         self.ollama_host = _get(data, "ollama.host", "http://127.0.0.1:11434").rstrip("/")
-        self.ollama_model = _get(data, "ollama.model", "qwen2.5:3b")
+        self.ollama_model = _get(data, "ollama.model", SNAPPY_MODEL)
         self.ollama_timeout = float(_get(data, "ollama.timeout_seconds", 120))
 
         self.whisper_model = _get(data, "whisper.model_size", "small")
@@ -37,12 +45,31 @@ class Settings:
         self.compute_type_cuda = _get(data, "whisper.compute_type_cuda", "float16")
         self.compute_type_cpu = _get(data, "whisper.compute_type_cpu", "int8")
 
+        self.vram_profile = str(_get(data, "vram.profile", "snappy") or "snappy").lower()
+        self.vram_warn_mb = int(_get(data, "vram.warn_mb", 7000))
+        if self.vram_profile == "quality":
+            self.whisper_device = "cpu"
+            if self.ollama_model in (SNAPPY_MODEL, "", None):
+                self.ollama_model = _get(data, "vram.quality_model", QUALITY_MODEL)
+
         self.tts_enabled = bool(_get(data, "tts.enabled", True))
         self.tts_mute = bool(_get(data, "tts.mute", False))
         self.tts_voice = _get(data, "tts.voice", "en_US-amy-medium")
         self.tts_length_scale = float(_get(data, "tts.length_scale", 1.05))
         self.piper_dir = ROOT / str(_get(data, "tts.piper_dir", "models/piper"))
         self.max_sentence_chars = int(_get(data, "tts.max_sentence_chars", 280))
+        self.tts_voices = list(
+            _get(
+                data,
+                "tts.voices",
+                [
+                    "en_US-amy-medium",
+                    "en_US-kristin-medium",
+                    "en_US-hfc_female-medium",
+                ],
+            )
+            or []
+        )
 
         self.sample_rate = int(_get(data, "audio.sample_rate", 16000))
         self.mic_device = _get(data, "audio.mic_device", None)
@@ -51,28 +78,44 @@ class Settings:
         self.min_utterance_ms = int(_get(data, "audio.min_utterance_ms", 350))
         self.energy_threshold = float(_get(data, "audio.energy_threshold", 0.012))
         self.max_utterance_seconds = float(_get(data, "audio.max_utterance_seconds", 20))
+        self.duck_enabled = bool(_get(data, "audio.duck_enabled", False))
+        self.duck_gain = float(_get(data, "audio.duck_gain", 0.25))
+        self.wake_word = bool(_get(data, "audio.wake_word", False))
 
         self.chat_buffer_size = int(_get(data, "chat.buffer_size", 40))
-        self.cooldown_seconds = float(_get(data, "chat.cooldown_seconds", 30))
-        self.max_replies_per_minute = int(_get(data, "chat.max_replies_per_minute", 4))
-        self.scan_interval_seconds = float(_get(data, "chat.scan_interval_seconds", 8))
+        self.cooldown_seconds = float(_get(data, "chat.cooldown_seconds", 12))
+        self.max_replies_per_minute = int(_get(data, "chat.max_replies_per_minute", 8))
+        self.scan_interval_seconds = float(_get(data, "chat.scan_interval_seconds", 3))
         self.mention_boost = bool(_get(data, "chat.mention_boost", True))
         self.post_voice_replies_to_chat = bool(_get(data, "chat.post_voice_replies_to_chat", True))
         self.chat_max_chars = int(_get(data, "chat.chat_max_chars", 200))
+        self.per_user_cooldown_seconds = float(_get(data, "chat.per_user_cooldown_seconds", 20))
+        self.auto_reconnect_twitch = bool(_get(data, "chat.auto_reconnect", True))
+        self.min_send_gap_seconds = float(_get(data, "chat.min_send_gap_seconds", 1.2))
+        self.chat_commands = [str(c).lower() for c in (_get(data, "chat.commands", ["!so", "!pixel", "!ask"]) or [])]
+        self.ambient_chat_context = int(_get(data, "chat.ambient_context_lines", 6))
 
         self.spoken_turns = int(_get(data, "memory.spoken_turns", 8))
         self.chat_context_lines = int(_get(data, "memory.chat_context_lines", 20))
         self.memory_events = int(_get(data, "memory.events", 80))
-        self.memory_viewers = int(_get(data, "memory.viewers", 40))
+        self.memory_viewers = int(_get(data, "memory.viewers", 48))
         self.memory_thread_turns = int(_get(data, "memory.thread_turns", 12))
-        self.per_user_cooldown_seconds = float(_get(data, "chat.per_user_cooldown_seconds", 20))
-        self.auto_reconnect_twitch = bool(_get(data, "chat.auto_reconnect", True))
+        self.catchphrase_seconds = float(_get(data, "memory.catchphrase_seconds", 600))
 
         self.events_enabled = bool(_get(data, "events.enabled", True))
         self.announce_follows = bool(_get(data, "events.announce_follows", True))
         self.follow_batch_seconds = float(_get(data, "events.follow_batch_seconds", 8))
         self.events_speak = bool(_get(data, "events.speak", True))
         self.events_post_to_chat = bool(_get(data, "events.post_to_chat", True))
+        self.bits_enabled = bool(_get(data, "events.bits", False))
+        self.channel_points_enabled = bool(_get(data, "events.channel_points", False))
+        self.hype_train_enabled = bool(_get(data, "events.hype_train", False))
+        self.polls_enabled = bool(_get(data, "events.polls", False))
+        self.predictions_enabled = bool(_get(data, "events.predictions", False))
+        rewards = _get(data, "events.channel_point_rewards", {}) or {}
+        self.channel_point_rewards = {str(k).lower(): str(v).lower() for k, v in rewards.items()}
+
+        self.overlay_alert_hold = float(_get(data, "overlay.alert_hold_seconds", 6))
 
         self.twitch_token = os.getenv("TWITCH_TOKEN", "").strip()
         self.twitch_nick = os.getenv("TWITCH_NICK", "").strip()
@@ -83,6 +126,27 @@ class Settings:
     def event_token(self) -> str:
         return (self.twitch_event_token or self.twitch_token).strip()
 
+    def missing_secrets(self) -> list[str]:
+        missing = []
+        if not self.twitch_token:
+            missing.append("TWITCH_TOKEN")
+        if not self.twitch_nick:
+            missing.append("TWITCH_NICK")
+        if not self.twitch_channel:
+            missing.append("TWITCH_CHANNEL")
+        return missing
+
+    def secret_hints(self) -> list[str]:
+        hints = []
+        missing = self.missing_secrets()
+        if missing:
+            hints.append(
+                "Missing " + ", ".join(missing) + ". Copy .env.example to .env and add a Twitch chat token."
+            )
+        if self.events_enabled and not self.twitch_client_id:
+            hints.append("Add TWITCH_CLIENT_ID (and optional TWITCH_EVENT_TOKEN) for follows/subs/raids.")
+        return hints
+
     def reload_secrets(self) -> None:
         load_dotenv(ROOT / ".env", override=True)
         self.twitch_token = os.getenv("TWITCH_TOKEN", "").strip()
@@ -91,6 +155,38 @@ class Settings:
         self.twitch_client_id = os.getenv("TWITCH_CLIENT_ID", "").strip()
         self.twitch_event_token = os.getenv("TWITCH_EVENT_TOKEN", "").strip()
 
+    def reward_action(self, title: str) -> str:
+        action = self.channel_point_rewards.get((title or "").strip().lower(), "ignore")
+        if action not in ("speak", "chat", "ignore"):
+            return "ignore"
+        return action
+
+    def event_subscriptions(self) -> list[tuple[str, str]]:
+        subs = [
+            ("channel.follow", "2"),
+            ("channel.subscribe", "1"),
+            ("channel.subscription.gift", "1"),
+            ("channel.subscription.message", "1"),
+            ("channel.raid", "1"),
+        ]
+        if self.bits_enabled:
+            subs.append(("channel.cheer", "1"))
+        if self.channel_points_enabled:
+            subs.append(("channel.channel_points_custom_reward_redemption.add", "1"))
+        if self.hype_train_enabled:
+            subs.extend(
+                [
+                    ("channel.hype_train.begin", "2"),
+                    ("channel.hype_train.progress", "2"),
+                    ("channel.hype_train.end", "2"),
+                ]
+            )
+        if self.polls_enabled:
+            subs.extend([("channel.poll.begin", "1"), ("channel.poll.end", "1")])
+        if self.predictions_enabled:
+            subs.extend([("channel.prediction.begin", "1"), ("channel.prediction.end", "1")])
+        return subs
+
 
 def load_settings(path: Path | None = None) -> Settings:
     load_dotenv(ROOT / ".env")
@@ -98,3 +194,64 @@ def load_settings(path: Path | None = None) -> Settings:
     with cfg_path.open(encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     return Settings(data)
+
+
+def _yaml_scalar(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def update_config(updates: dict[str, Any], path: Path | None = None) -> None:
+    """Update existing scalar keys in config.yaml without dropping comments."""
+    cfg_path = path or (ROOT / "config.yaml")
+    lines = cfg_path.read_text(encoding="utf-8").splitlines()
+    for dotted, value in updates.items():
+        if "." not in dotted:
+            continue
+        section, key = dotted.split(".", 1)
+        lines = _set_in_section(lines, section, key, _yaml_scalar(value))
+    cfg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _set_in_section(lines: list[str], section: str, key: str, rendered: str) -> list[str]:
+    start = None
+    for i, line in enumerate(lines):
+        if line.startswith(f"{section}:"):
+            start = i
+            break
+    if start is None:
+        lines.extend(["", f"{section}:", f"  {key}: {rendered}"])
+        return lines
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        if lines[j] and not lines[j].startswith((" ", "#", "\t")):
+            end = j
+            break
+    pattern = re_key(key)
+    for j in range(start + 1, end):
+        if pattern.match(lines[j]):
+            indent = lines[j][: len(lines[j]) - len(lines[j].lstrip(" "))]
+            lines[j] = f"{indent}{key}: {rendered}"
+            return lines
+    lines.insert(end, f"  {key}: {rendered}")
+    return lines
+
+
+def re_key(key: str):
+    import re
+
+    return re.compile(rf"^\s*{re.escape(key)}\s*:")
+
+
+def assert_bind_allowed(host: str, allow_remote: bool) -> None:
+    if is_loopback(host) or allow_remote:
+        return
+    raise RuntimeError(
+        f"Refusing to bind {host}. The booth has no auth. "
+        "Stay on 127.0.0.1, or set server.allow_remote: true if you mean to expose it."
+    )

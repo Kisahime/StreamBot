@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from typing import Callable, Awaitable, Optional
+from typing import Awaitable, Callable, Optional
 
 import numpy as np
 import sounddevice as sd
 
-from src.audio.vad import rms, has_speech_silero
+from src.audio.vad import has_speech_silero, rms
+from src.audio.wake import WakeWord
 from src.settings import Settings
 
 log = logging.getLogger("cohost.mic")
@@ -27,6 +28,10 @@ class MicListener:
         self._task: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.level = 0.0
+        self.wake = WakeWord(settings)
+        self._wake_buf: deque[np.ndarray] = deque()
+        self._wake_samples = 0
+        self._wake_latch = False
 
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -75,19 +80,33 @@ class MicListener:
 
     async def _run(self) -> None:
         sr = self.settings.sample_rate
-        silence_needed = int(sr * (self.settings.silence_ms / 1000.0))
-        min_len = int(sr * (self.settings.min_utterance_ms / 1000.0))
-        max_len = int(sr * self.settings.max_utterance_seconds)
         capturing = False
         buf: deque[np.ndarray] = deque()
         captured = 0
         silent = 0
         ptt_was_down = False
+        wake_need = int(sr * 0.08)
 
         while True:
             chunk = await self._queue.get()
             self.level = rms(chunk)
-            armed = self.listen_enabled or self.ptt_down
+            silence_needed = int(sr * (self.settings.silence_ms / 1000.0))
+            min_len = int(sr * (self.settings.min_utterance_ms / 1000.0))
+            max_len = int(sr * self.settings.max_utterance_seconds)
+            armed = self.listen_enabled or self.ptt_down or self._wake_latch
+            wake_hit = False
+            if not armed and self.wake.model is not None:
+                self._wake_buf.append(chunk)
+                self._wake_samples += len(chunk)
+                while self._wake_samples > wake_need * 4 and self._wake_buf:
+                    dropped = self._wake_buf.popleft()
+                    self._wake_samples -= len(dropped)
+                if self._wake_samples >= wake_need and self.wake.heard(np.concatenate(list(self._wake_buf))):
+                    self._wake_latch = True
+                    armed = True
+                    wake_hit = True
+                    self._wake_buf.clear()
+                    self._wake_samples = 0
 
             if not armed:
                 if capturing and captured >= min_len:
@@ -101,7 +120,7 @@ class MicListener:
 
             energy_hit = self.level >= self.settings.energy_threshold
             if not capturing:
-                if self.ptt_down or energy_hit:
+                if self.ptt_down or energy_hit or wake_hit:
                     capturing = True
                     buf.clear()
                     buf.append(chunk)
@@ -129,6 +148,7 @@ class MicListener:
                 ended = silent >= silence_needed or captured >= max_len
 
             if ended:
+                self._wake_latch = False
                 await self._flush(buf, captured, sr)
                 capturing = False
                 buf.clear()

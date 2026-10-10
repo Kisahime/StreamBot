@@ -78,6 +78,34 @@ class StreamEvent:
         if self.kind == "raid":
             viewers = extra.get("viewers") or extra.get("viewer_count") or "?"
             return f"{self.user} just raided in with {viewers} viewers."
+        if self.kind == "cheer":
+            bits = extra.get("bits") or 0
+            if len(names) > 1:
+                total = extra.get("total_bits") or bits
+                return f"{', '.join(names)} cheered ({total} bits)."
+            who = names[0] if names else "Someone"
+            return f"{who} cheered {bits} bits."
+        if self.kind == "redeem":
+            title = extra.get("title") or "a reward"
+            note = extra.get("input") or ""
+            bit = f' They said: "{note}"' if note else ""
+            return f"{self.user} redeemed {title}.{bit}"
+        if self.kind == "hype_begin":
+            train = str(extra.get("train") or "").strip()
+            label = f"{train} hype train" if train else "hype train"
+            return f"A {label} just started (level {extra.get('level') or 1})."
+        if self.kind == "hype_end":
+            train = str(extra.get("train") or "").strip()
+            label = f"{train} hype train" if train else "hype train"
+            return f"The {label} ended at level {extra.get('level') or 1}."
+        if self.kind == "poll_start":
+            return f"A poll just started: {extra.get('title') or 'a poll'}."
+        if self.kind == "poll_end":
+            return f"The poll ended: {extra.get('title') or 'a poll'}."
+        if self.kind == "prediction_start":
+            return f"A prediction just opened: {extra.get('title') or 'a prediction'}."
+        if self.kind == "prediction_end":
+            return f"The prediction closed: {extra.get('title') or 'a prediction'}."
         return f"{self.kind}: {self.user}"
 
 
@@ -89,16 +117,22 @@ class EventSubClient:
         channel: str,
         on_event: Callable[[StreamEvent], Awaitable[None]],
         on_status: Callable[[str], Awaitable[None]],
+        subscriptions: Optional[list[tuple[str, str]]] = None,
     ) -> None:
         self.token = bearer_token(token)
         self.client_id = (client_id or "").strip()
         self.channel = (channel or "").strip().lstrip("#")
         self.on_event = on_event
         self.on_status = on_status
+        self.subscriptions = list(subscriptions or SUBSCRIPTIONS)
         self.connected = False
         self.last_error: str | None = None
+        self.fatal = False
+        self.broadcaster_id = ""
+        self.moderator_id = ""
         self._task: Optional[asyncio.Task] = None
         self._stop = False
+        self.connecting = False
         self._ready = asyncio.Event()
         self._seen: deque[str] = deque(maxlen=400)
         self._seen_set: set[str] = set()
@@ -118,15 +152,18 @@ class EventSubClient:
             raise ValueError("TWITCH_CHANNEL is required for EventSub")
         await self.disconnect()
         self._stop = False
+        self.connecting = True
         self._ready = asyncio.Event()
         self.last_error = None
         self._task = asyncio.create_task(self._run(), name="twitch-eventsub")
         await self.on_status("connecting")
         try:
-            await asyncio.wait_for(self._ready.wait(), timeout=25)
+            await asyncio.wait_for(self._ready.wait(), timeout=20)
         except asyncio.TimeoutError:
             await self.disconnect()
-            raise TimeoutError("EventSub did not become ready in 25s. Check Client-ID and event token scopes.")
+            raise TimeoutError("EventSub websocket did not finish subscribing. Try Connect alerts again.")
+        finally:
+            self.connecting = False
         if not self.connected:
             err = self.last_error or "EventSub login failed"
             await self.disconnect()
@@ -149,6 +186,8 @@ class EventSubClient:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        if not self._ready.is_set():
+            self._ready.set()
         await self.on_status("disconnected")
 
     async def _run(self) -> None:
@@ -163,11 +202,16 @@ class EventSubClient:
                 self.last_error = str(e)
                 log.exception("EventSub session failed")
                 self.connected = False
-                await self.on_status("error")
+                status = "token rejected" if _looks_like_auth(str(e)) else "error"
+                if status == "token rejected":
+                    self.fatal = True
+                await self.on_status(status)
                 if not self._ready.is_set():
                     self._ready.set()
+                if self.fatal:
+                    break
                 url = WS_URL
-            if self._stop:
+            if self._stop or self.fatal:
                 break
             await asyncio.sleep(2)
 
@@ -198,7 +242,10 @@ class EventSubClient:
                     except Exception as e:
                         self.last_error = str(e)
                         log.error("EventSub subscribe failed: %s", e)
-                        await self.on_status("error")
+                        status = "token rejected" if _looks_like_auth(str(e)) else "error"
+                        if status == "token rejected":
+                            self.fatal = True
+                        await self.on_status(status)
                         self._ready.set()
                         break
                     self.connected = True
@@ -218,7 +265,11 @@ class EventSubClient:
                     mid = meta.get("message_id") or ""
                     if mid and not self._remember(mid):
                         continue
-                    ev = _parse_notification(meta.get("subscription_type") or "", payload.get("event") or {})
+                    ev = _parse_notification(
+                        meta.get("subscription_type") or "",
+                        payload.get("event") or {},
+                        channel=self.channel,
+                    )
                     if ev:
                         await self.on_event(ev)
             self._ws = None
@@ -247,6 +298,7 @@ class EventSubClient:
                 raise RuntimeError(_helix_err("Get Users (self)", me))
             me_data = (me.json().get("data") or [{}])[0]
             moderator_id = str(me_data.get("id") or "")
+            self.moderator_id = moderator_id
             ch = await client.get(f"{HELIX}/users", headers=headers, params={"login": self.channel})
             if ch.status_code != 200:
                 raise RuntimeError(_helix_err("Get Users (channel)", ch))
@@ -254,11 +306,11 @@ class EventSubClient:
             if not ch_list:
                 raise RuntimeError(f"Twitch channel login not found: {self.channel}")
             broadcaster_id = str(ch_list[0].get("id") or "")
+            self.broadcaster_id = broadcaster_id
             if not broadcaster_id or not moderator_id:
                 raise RuntimeError("Could not resolve broadcaster or token user id")
 
-            errors: list[str] = []
-            for stype, version in SUBSCRIPTIONS:
+            async def _one(stype: str, version: str) -> str | None:
                 if stype == "channel.follow":
                     condition = {"broadcaster_user_id": broadcaster_id, "moderator_user_id": moderator_id}
                 elif stype == "channel.raid":
@@ -272,13 +324,25 @@ class EventSubClient:
                     "transport": {"method": "websocket", "session_id": session_id},
                 }
                 r = await client.post(f"{HELIX}/eventsub/subscriptions", headers=headers, json=body)
-                if r.status_code not in (200, 202):
-                    errors.append(f"{stype}: {_helix_err('subscribe', r)}")
-            if len(errors) == len(SUBSCRIPTIONS):
+                if r.status_code in (200, 202, 409):
+                    return None
+                return f"{stype}: {_helix_err('subscribe', r)}"
+
+            results = await asyncio.gather(*(_one(stype, version) for stype, version in self.subscriptions))
+            errors = [item for item in results if item]
+            if len(errors) == len(self.subscriptions):
                 raise RuntimeError("; ".join(errors))
             if errors:
                 log.warning("Some EventSub subscriptions failed: %s", "; ".join(errors))
                 self.last_error = "; ".join(errors)
+
+
+def _looks_like_auth(text: str) -> bool:
+    low = (text or "").lower()
+    return any(
+        bit in low
+        for bit in ("401", "403", "invalid oauth", "missing proper authorization", "authorization failed")
+    )
 
 
 def _helix_err(what: str, resp: httpx.Response) -> str:
@@ -289,7 +353,12 @@ def _helix_err(what: str, resp: httpx.Response) -> str:
     return f"{what} HTTP {resp.status_code}: {str(msg)[:240]}"
 
 
-def _parse_notification(stype: str, event: dict[str, Any]) -> Optional[StreamEvent]:
+def _hype_extra(event: dict[str, Any]) -> dict[str, Any]:
+    train = str(event.get("type") or "").replace("_", " ").strip()
+    return {"level": event.get("level") or 1, "train": train}
+
+
+def _parse_notification(stype: str, event: dict[str, Any], channel: str = "") -> Optional[StreamEvent]:
     user = (
         event.get("user_name")
         or event.get("user_login")
@@ -334,9 +403,44 @@ def _parse_notification(stype: str, event: dict[str, Any]) -> Optional[StreamEve
             },
         )
     if stype == "channel.raid":
+        from_login = str(event.get("from_broadcaster_user_login") or "").lower()
+        if channel and from_login == channel.lower():
+            return None
         return StreamEvent(
             kind="raid",
             user=user,
-            extra={"viewers": event.get("viewers")},
+            extra={
+                "viewers": event.get("viewers"),
+                "from_id": event.get("from_broadcaster_user_id") or "",
+                "from_login": event.get("from_broadcaster_user_login") or "",
+            },
         )
+    if stype == "channel.cheer":
+        return StreamEvent(
+            kind="cheer",
+            user=user or "Anonymous",
+            extra={"bits": event.get("bits") or 0, "anonymous": bool(event.get("is_anonymous"))},
+        )
+    if stype == "channel.channel_points_custom_reward_redemption.add":
+        reward = event.get("reward") or {}
+        title = reward.get("title") if isinstance(reward, dict) else ""
+        return StreamEvent(
+            kind="redeem",
+            user=user,
+            extra={"title": title or "", "input": event.get("user_input") or ""},
+        )
+    if stype == "channel.hype_train.begin":
+        return StreamEvent(kind="hype_begin", user="chat", extra=_hype_extra(event))
+    if stype == "channel.hype_train.progress":
+        return StreamEvent(kind="hype_progress", user="chat", extra=_hype_extra(event))
+    if stype == "channel.hype_train.end":
+        return StreamEvent(kind="hype_end", user="chat", extra=_hype_extra(event))
+    if stype == "channel.poll.begin":
+        return StreamEvent(kind="poll_start", user="chat", extra={"title": event.get("title") or "a poll"})
+    if stype == "channel.poll.end":
+        return StreamEvent(kind="poll_end", user="chat", extra={"title": event.get("title") or "a poll"})
+    if stype == "channel.prediction.begin":
+        return StreamEvent(kind="prediction_start", user="chat", extra={"title": event.get("title") or "a prediction"})
+    if stype == "channel.prediction.end":
+        return StreamEvent(kind="prediction_end", user="chat", extra={"title": event.get("title") or "a prediction"})
     return None
