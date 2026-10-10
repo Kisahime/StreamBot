@@ -4,9 +4,9 @@ import asyncio
 import logging
 import re
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Awaitable, Callable, Optional
+from datetime import UTC, datetime
 
 from twitchio.ext import commands
 
@@ -28,7 +28,7 @@ ENGAGE_RE = re.compile(
 class ChatLine:
     user: str
     text: str
-    at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    at: datetime = field(default_factory=lambda: datetime.now(UTC))
     mention: bool = False
     command: str = ""
 
@@ -81,9 +81,9 @@ class TwitchChat:
         on_line: Callable[[ChatLine], Awaitable[None]],
         on_status: Callable[[str], Awaitable[None]],
         buffer_size: int = 40,
-        bot_names: Optional[list[str]] = None,
-        allow_from: Optional[list[str]] = None,
-        commands: Optional[list[str]] = None,
+        bot_names: list[str] | None = None,
+        allow_from: list[str] | None = None,
+        commands: list[str] | None = None,
         min_send_gap: float = 1.2,
     ) -> None:
         self.token = normalize_token(token)
@@ -96,14 +96,14 @@ class TwitchChat:
         self.allow_from = {n.lower().lstrip("@") for n in (allow_from or []) if n}
         self.commands = {c.lower() if c.startswith("!") else f"!{c.lower()}" for c in (commands or [])}
         self.min_send_gap = min_send_gap
-        self._bot: Optional[commands.Bot] = None
-        self._task: Optional[asyncio.Task] = None
+        self._bot: commands.Bot | None = None
+        self._task: asyncio.Task | None = None
         self._ready = asyncio.Event()
-        self._connect_error: Optional[str] = None
+        self._connect_error: str | None = None
         self.connected = False
         self.auth_failed = False
         self._out: asyncio.Queue[str] = asyncio.Queue()
-        self._sender: Optional[asyncio.Task] = None
+        self._sender: asyncio.Task | None = None
 
     def set_allow_from(self, names: list[str]) -> None:
         self.allow_from = {n.lower().lstrip("@") for n in names if n}
@@ -135,7 +135,7 @@ class TwitchChat:
                 await parent.on_status("connected")
                 parent._ready.set()
 
-            async def event_error(inner_self, error: Exception, data: Optional[str] = None) -> None:
+            async def event_error(inner_self, error: Exception, data: str | None = None) -> None:
                 parent._connect_error = str(error)
                 log.error("Twitch error: %s %s", error, data or "")
                 status = "token rejected" if looks_like_auth_failure(str(error)) else "error"
@@ -171,9 +171,9 @@ class TwitchChat:
         await self.on_status("connecting")
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=20)
-        except asyncio.TimeoutError:
+        except TimeoutError as err:
             await self.disconnect()
-            raise TimeoutError("Twitch IRC did not become ready in 20s. Check token, nick, and channel.")
+            raise TimeoutError("Twitch IRC did not become ready in 20s. Check token, nick, and channel.") from err
         if not self.connected:
             err = self._connect_error or "Twitch login failed"
             auth = looks_like_auth_failure(err)

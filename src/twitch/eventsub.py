@@ -4,8 +4,9 @@ import asyncio
 import json
 import logging
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any
 
 import httpx
 import websockets
@@ -117,7 +118,7 @@ class EventSubClient:
         channel: str,
         on_event: Callable[[StreamEvent], Awaitable[None]],
         on_status: Callable[[str], Awaitable[None]],
-        subscriptions: Optional[list[tuple[str, str]]] = None,
+        subscriptions: list[tuple[str, str]] | None = None,
     ) -> None:
         self.token = bearer_token(token)
         self.client_id = (client_id or "").strip()
@@ -130,7 +131,7 @@ class EventSubClient:
         self.fatal = False
         self.broadcaster_id = ""
         self.moderator_id = ""
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._stop = False
         self.connecting = False
         self._ready = asyncio.Event()
@@ -159,9 +160,9 @@ class EventSubClient:
         await self.on_status("connecting")
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=20)
-        except asyncio.TimeoutError:
+        except TimeoutError as err:
             await self.disconnect()
-            raise TimeoutError("EventSub websocket did not finish subscribing. Try Connect alerts again.")
+            raise TimeoutError("EventSub websocket did not finish subscribing. Try Connect alerts again.") from err
         finally:
             self.connecting = False
         if not self.connected:
@@ -215,10 +216,10 @@ class EventSubClient:
                 break
             await asyncio.sleep(2)
 
-    async def _session(self, url: str) -> Optional[str]:
+    async def _session(self, url: str) -> str | None:
         async with websockets.connect(url, ping_interval=20, ping_timeout=20, max_size=2**20) as ws:
             self._ws = ws
-            reconnect: Optional[str] = None
+            reconnect: str | None = None
             async for raw in ws:
                 if self._stop:
                     break
@@ -358,7 +359,7 @@ def _hype_extra(event: dict[str, Any]) -> dict[str, Any]:
     return {"level": event.get("level") or 1, "train": train}
 
 
-def _parse_notification(stype: str, event: dict[str, Any], channel: str = "") -> Optional[StreamEvent]:
+def _parse_notification(stype: str, event: dict[str, Any], channel: str = "") -> StreamEvent | None:
     user = (
         event.get("user_name")
         or event.get("user_login")

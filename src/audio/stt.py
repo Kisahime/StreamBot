@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import numpy as np
 
@@ -55,7 +54,7 @@ class SpeechToText:
         self.model = None
         self.device = "cpu"
         self.compute_type = "int8"
-        self.error: Optional[str] = None
+        self.error: str | None = None
 
     def load(self) -> None:
         from faster_whisper import WhisperModel
