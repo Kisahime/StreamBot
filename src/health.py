@@ -15,6 +15,23 @@ _ollama_cache: tuple[float, dict[str, Any]] | None = None
 _devices_cache: dict[str, Any] | None = None
 
 
+def clear_device_cache() -> None:
+    global _devices_cache
+    _devices_cache = None
+
+
+async def load_devices(*, refresh: bool = False) -> dict[str, Any]:
+    global _devices_cache
+    if refresh:
+        clear_device_cache()
+    if _devices_cache is None:
+        try:
+            _devices_cache = await asyncio.to_thread(list_devices)
+        except Exception as e:
+            _devices_cache = {"error": str(e), "inputs": [], "outputs": []}
+    return _devices_cache
+
+
 def nvidia_gpu() -> dict[str, Any]:
     global _gpu_cache
     now = time.monotonic()
@@ -50,7 +67,7 @@ def nvidia_gpu() -> dict[str, Any]:
 
 
 async def snapshot(settings: Settings, orch) -> dict[str, Any]:
-    global _ollama_cache, _devices_cache
+    global _ollama_cache
     now = time.monotonic()
     if _ollama_cache and now - _ollama_cache[0] < 10:
         ollama = _ollama_cache[1]
@@ -58,11 +75,7 @@ async def snapshot(settings: Settings, orch) -> dict[str, Any]:
         ollama = await orch.llm.health()
         _ollama_cache = (now, ollama)
     gpu = await asyncio.to_thread(nvidia_gpu)
-    if _devices_cache is None:
-        try:
-            _devices_cache = await asyncio.to_thread(list_devices)
-        except Exception as e:
-            _devices_cache = {"error": str(e), "inputs": [], "outputs": []}
+    devices = await load_devices()
     return {
         "gpu": gpu,
         "ollama": ollama,
@@ -97,7 +110,7 @@ async def snapshot(settings: Settings, orch) -> dict[str, Any]:
             "spoken_name": orch.identity.spoken_name(),
         },
         "memory": orch.memory.snapshot(),
-        "devices": _devices_cache,
+        "devices": devices,
         "setup": _setup_hints(ollama, settings, gpu, orch),
         "vram": {
             "profile": settings.vram_profile,
@@ -120,7 +133,10 @@ async def snapshot(settings: Settings, orch) -> dict[str, Any]:
         "audio": {
             "mic_device": settings.mic_device,
             "speaker_device": settings.speaker_device,
+            "mic_device_name": settings.mic_device_name,
+            "speaker_device_name": settings.speaker_device_name,
         },
+        "overlay": {"alert_hold_seconds": settings.overlay_alert_hold},
     }
 
 

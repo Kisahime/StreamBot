@@ -69,6 +69,8 @@ class VadBody(BaseModel):
 class DeviceBody(BaseModel):
     mic_device: int | None = None
     speaker_device: int | None = None
+    mic_device_name: str | None = None
+    speaker_device_name: str | None = None
 
 
 class FlagBody(BaseModel):
@@ -146,11 +148,11 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
         return data
 
     @app.get("/api/devices")
-    async def devices():
-        from src.audio.devices import list_devices
+    async def devices(refresh: int = 0):
+        from src.health import load_devices
 
         try:
-            return list_devices()
+            return await load_devices(refresh=bool(refresh))
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -229,7 +231,12 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
     @app.post("/api/audio/devices")
     async def audio_devices(body: DeviceBody):
         try:
-            await app.state.orch.set_devices(body.mic_device, body.speaker_device)
+            await app.state.orch.set_devices(
+                body.mic_device,
+                body.speaker_device,
+                mic_name=body.mic_device_name,
+                speaker_name=body.speaker_device_name,
+            )
         except Exception as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         return {"ok": True}

@@ -9,6 +9,12 @@ ollama:
   # snappy profile keeps this 3B model. quality profile switches a 3B default to the 7B below.
   model: qwen2.5:3b
   timeout_seconds: 120
+  num_ctx: 4096
+  num_predict_chat: 80
+  num_predict_voice: 160
+  keep_alive: 30m
+  # Chat completions give up after this so a slow model can't stall the chat worker.
+  chat_timeout_seconds: 20
 
 # snappy: Whisper on CUDA + qwen2.5:3b (fits an 8 GB GPU with Whisper).
 # quality: forces Whisper onto CPU and, if the model is still the 3B default, uses the 7B.
@@ -41,7 +47,9 @@ tts:
 audio:
   sample_rate: 16000
   mic_device: null          # null = system default; override with a device index
+  mic_device_name: null     # re-resolved at startup if the index moves
   speaker_device: null
+  speaker_device_name: null
   silence_ms: 800
   min_utterance_ms: 350
   energy_threshold: 0.012   # RMS; raise if it false-triggers
@@ -49,8 +57,15 @@ audio:
   # Optional. Off by default. Needs pycaw to duck the Windows output; otherwise use an OBS sidechain.
   duck_enabled: false
   duck_gain: 0.25
+  # Talk-over stops Pixel. Echo gate ignores speaker bleed unless PTT is held or the level is much louder.
+  barge_in: true
+  echo_gate: true
+  echo_gate_ratio: 2.5
   # Local wake word via openwakeword. Off by default, and never the only way to talk.
   wake_word: false
+  wake_models:
+    - hey_jarvis
+  wake_threshold: 0.5
 
 chat:
   buffer_size: 40
@@ -72,9 +87,10 @@ chat:
   mod_commands:
     - "!so"
   shoutout_cooldown_seconds: 120
+  # Pending viewer lines older than this are dropped (streamer lines and commands stay).
+  max_age_seconds: 45
 
 memory:
-  spoken_turns: 8
   chat_context_lines: 20
   events: 80
   viewers: 48

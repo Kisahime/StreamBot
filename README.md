@@ -106,7 +106,7 @@ These optional feeds are **off** in `config.yaml`. Turn one on only when the eve
 
 Pixel's spoken audio can go to a virtual cable (VB-Audio, VoiceMeeter). The device list labels those outputs; pick one in the booth. The default output is not changed until you pick it.
 
-Music ducking is off. Preferred setup: music on its own OBS track, sidechained to the cohost cable. `audio.duck_enabled: true` lowers the Windows output endpoint while Pixel talks if `pycaw` is installed; otherwise the booth keeps the OBS sidechain note.
+Music ducking is off. Preferred setup: music on its own OBS track, sidechained to the cohost cable. `audio.duck_enabled: true` lowers other apps' per-session volume (pycaw) while Pixel talks, and only when `speaker_device` is a different device than the default output. With `speaker_device: null` the booth shows a note and does not change the volume. The pre-duck levels are stored in `data/duck.json` and restored on the next launch, and again if the process exits while ducked.
 
 Edit `persona.yaml` anytime, then click **Reload persona**. No restart needed.
 

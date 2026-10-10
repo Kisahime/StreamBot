@@ -8,7 +8,7 @@ const q = new URLSearchParams(location.search);
 document.body.dataset.theme = q.get("theme") || "";
 document.body.dataset.position = q.get("position") || "bottom";
 const hideIdle = q.get("hide") === "idle";
-const holdMs = Math.max(1, Number(q.get("hold") || 6)) * 1000;
+let holdMs = Math.max(1, Number(q.get("hold") || 6)) * 1000;
 let alertTimer = 0;
 
 if (hideIdle) document.body.classList.add("hide-idle");
@@ -22,6 +22,10 @@ async function boot() {
   try {
     const health = await fetch("/api/health").then((r) => r.json());
     if (health.persona) nameEl.textContent = health.persona;
+    const overlay = health.overlay || {};
+    if (!q.get("hold") && overlay.alert_hold_seconds) {
+      holdMs = Math.max(1, Number(overlay.alert_hold_seconds)) * 1000;
+    }
   } catch {
     /* overlay still works via ws */
   }

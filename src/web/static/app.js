@@ -35,6 +35,7 @@ let streamerLabel = "Streamer";
 let selectedPerson = "streamer";
 let lastPeople = [];
 let devicesLoaded = false;
+let personaName = "Cohost";
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -316,6 +317,7 @@ function fillSelect(select, options, current, emptyLabel) {
     const node = document.createElement("option");
     node.value = String(opt.value);
     node.textContent = opt.label;
+    if (opt.name) node.dataset.name = opt.name;
     select.appendChild(node);
   }
   const want = current == null ? "" : String(current);
@@ -323,6 +325,7 @@ function fillSelect(select, options, current, emptyLabel) {
 }
 
 function renderSys(health) {
+  if (health.persona) personaName = health.persona;
   const gpu = health.gpu || {};
   const ollama = health.ollama || {};
   const whisper = health.whisper || {};
@@ -369,17 +372,7 @@ function renderSys(health) {
   if (health.language && document.activeElement !== $("langSelect")) $("langSelect").value = health.language;
   if (!devicesLoaded && health.devices) {
     const devices = health.devices;
-    const ins = (devices.inputs || []).map((d) => ({
-      value: d.index,
-      label: `#${d.index} ${d.name}${d.cable ? " · virtual cable" : ""}`,
-    }));
-    const outs = (devices.outputs || []).map((d) => ({
-      value: d.index,
-      label: `#${d.index} ${d.name}${d.cable ? " · virtual cable" : ""}`,
-    }));
-    fillSelect($("micSelect"), ins, health.audio && health.audio.mic_device, "system default");
-    fillSelect($("spkSelect"), outs, health.audio && health.audio.speaker_device, "system default");
-    devicesLoaded = true;
+    applyDeviceList(devices, health);
   }
   if (health.voices && !$("voiceSelect").options.length) {
     fillSelect(
@@ -458,14 +451,57 @@ function applyStatus(st) {
   if (st.mood && document.activeElement !== $("mood")) $("mood").value = st.mood;
 }
 
+function selectedDeviceName(id) {
+  const select = $(id);
+  const option = select.options[select.selectedIndex];
+  return option && option.dataset.name ? option.dataset.name : null;
+}
+
+function applyDeviceList(devices, health) {
+  const ins = (devices.inputs || []).map((d) => ({
+    value: d.index,
+    name: d.name,
+    label: `#${d.index} ${d.name}${d.cable ? " · virtual cable" : ""}`,
+  }));
+  const outs = (devices.outputs || []).map((d) => ({
+    value: d.index,
+    name: d.name,
+    label: `#${d.index} ${d.name}${d.cable ? " · virtual cable" : ""}`,
+  }));
+  const audio = (health && health.audio) || {};
+  fillSelect($("micSelect"), ins, audio.mic_device, "system default");
+  fillSelect($("spkSelect"), outs, audio.speaker_device, "system default");
+  devicesLoaded = true;
+}
+
 function saveDevices() {
   const mic = $("micSelect").value;
   const spk = $("spkSelect").value;
   defPost("/api/audio/devices", {
     mic_device: mic === "" ? null : Number(mic),
     speaker_device: spk === "" ? null : Number(spk),
+    mic_device_name: mic === "" ? null : selectedDeviceName("micSelect"),
+    speaker_device_name: spk === "" ? null : selectedDeviceName("spkSelect"),
   }).catch((e) => { hint.textContent = String(e.message || e); });
 }
+$("refreshDevices").addEventListener("click", async () => {
+  devicesLoaded = false;
+  try {
+    const res = await fetch("/api/devices?refresh=1", { cache: "no-store" });
+    if (!res.ok) throw new Error("could not refresh devices");
+    const micNow = $("micSelect").value;
+    const spkNow = $("spkSelect").value;
+    applyDeviceList(await res.json(), {
+      audio: {
+        mic_device: micNow === "" ? null : Number(micNow),
+        speaker_device: spkNow === "" ? null : Number(spkNow),
+      },
+    });
+    hint.textContent = "Device list refreshed.";
+  } catch (e) {
+    hint.textContent = String(e.message || e);
+  }
+});
 $("micSelect").addEventListener("change", saveDevices);
 $("spkSelect").addEventListener("change", saveDevices);
 $("langSelect").addEventListener("change", () => {
@@ -518,11 +554,15 @@ function connectWs() {
     if (msg.type === "status") {
       applyStatus(msg.data || {});
     } else if (msg.type === "level") {
-      const level = Math.min(1, Number(msg.data) || 0);
+      const data = msg.data;
+      const level = Math.min(1, data && typeof data === "object" ? Number(data.level) || 0 : Number(data) || 0);
+      const wake = data && typeof data === "object" ? Number(data.wake) || 0 : 0;
       if (meter) meter.style.width = `${Math.round(level * 400)}%`;
+      const wakeEl = $("wakeScore");
+      if (wakeEl) wakeEl.textContent = wake > 0 ? `wake ${wake.toFixed(2)}` : "";
     } else if (msg.type === "chat") {
       const d = msg.data || {};
-      const label = d.streamer ? `${d.user || ""} (streamer)` : (d.user || "Pixel");
+      const label = d.streamer ? `${d.user || ""} (streamer)` : (d.user || personaName);
       logParts(chatLog, [{ cls: d.bot ? "bot" : "u", text: label }, { text: " " + (d.text || "") }]);
     } else if (msg.type === "alert") {
       const d = msg.data || {};

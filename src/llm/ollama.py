@@ -14,6 +14,19 @@ from src.settings import Settings
 log = logging.getLogger("cohost.llm")
 
 
+def model_names_match(wanted: str, name: str) -> bool:
+    """Exact model name, or the same name with a ``:latest`` tag."""
+    left = (wanted or "").strip()
+    right = (name or "").strip()
+    if not left or not right:
+        return False
+    if right == left or right == f"{left}:latest":
+        return True
+    if left.endswith(":latest") and right == left[: -len(":latest")]:
+        return True
+    return False
+
+
 class OllamaClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -39,7 +52,7 @@ class OllamaClient:
             data = r.json()
             names = [m.get("name", "") for m in data.get("models", [])]
             wanted = self.settings.ollama_model
-            has_model = any(wanted == n or n.startswith(wanted) or wanted in n for n in names)
+            has_model = any(model_names_match(wanted, n) for n in names)
             self.last_error = None
             return {
                 "ok": True,
@@ -64,9 +77,11 @@ class OllamaClient:
         messages: list[dict[str, str]],
         temperature: float = 0.7,
         cancel: asyncio.Event | None = None,
+        num_predict: int | None = None,
     ) -> str:
         chunks: list[str] = []
-        async for piece in self.stream(messages, temperature=temperature, cancel=cancel):
+        predict = self.settings.ollama_num_predict_chat if num_predict is None else num_predict
+        async for piece in self.stream(messages, temperature=temperature, cancel=cancel, num_predict=predict):
             chunks.append(piece)
         return "".join(chunks).strip()
 
@@ -75,12 +90,20 @@ class OllamaClient:
         messages: list[dict[str, str]],
         temperature: float = 0.7,
         cancel: asyncio.Event | None = None,
+        num_predict: int | None = None,
     ) -> AsyncIterator[str]:
+        predict = self.settings.ollama_num_predict_voice if num_predict is None else num_predict
         payload = {
             "model": self.settings.ollama_model,
             "messages": messages,
             "stream": True,
-            "options": {"temperature": temperature, "num_ctx": 4096, "repeat_penalty": 1.15},
+            "keep_alive": self.settings.ollama_keep_alive,
+            "options": {
+                "temperature": temperature,
+                "num_ctx": self.settings.ollama_num_ctx,
+                "num_predict": predict,
+                "repeat_penalty": 1.15,
+            },
         }
         try:
             client = self._http()
@@ -126,7 +149,12 @@ class OllamaClient:
         limit = max_chars if max_chars is not None else self.settings.max_sentence_chars
         buf = ""
         spoken = 0
-        async for piece in self.stream(messages, temperature=temperature, cancel=cancel):
+        async for piece in self.stream(
+            messages,
+            temperature=temperature,
+            cancel=cancel,
+            num_predict=self.settings.ollama_num_predict_voice,
+        ):
             if cancel is not None and cancel.is_set():
                 return
             buf += piece

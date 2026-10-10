@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Local Twitch Cohost</title>
-  <link rel="stylesheet" href="/static/app.css?v=8" />
+  <link rel="stylesheet" href="/static/app.css?v=9" />
 </head>
 <body>
   <div class="app">
@@ -28,6 +28,7 @@
           <button id="stopBtn">Stop speaking</button>
         </div>
         <div class="meter" aria-hidden="true"><span id="meter"></span></div>
+        <p class="hint" id="wakeScore"></p>
         <label class="field">Mood
           <select id="mood">
             <option value="chill">chill</option>
@@ -78,6 +79,9 @@
         <label class="field">Speaker
           <select id="spkSelect"><option value="">system default</option></select>
         </label>
+        <div class="row">
+          <button id="refreshDevices" type="button">Refresh devices</button>
+        </div>
         <label class="field">Language
           <select id="langSelect">
             <option value="en">en</option>
@@ -166,6 +170,6 @@
       <div id="eventLog" class="log"></div>
     </section>
   </div>
-  <script src="/static/app.js?v=11"></script>
+  <script src="/static/app.js?v=12"></script>
 </body>
 </html>

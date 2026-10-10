@@ -140,16 +140,29 @@ def replies_too_similar(a: str, b: str) -> bool:
     return len(left & right) / min(len(left), len(right)) >= 0.6
 
 
-def streamer_smalltalk_fallback(text: str) -> str:
+def streamer_smalltalk_fallback(text: str, name: str = "Pixel") -> str:
     """A short in-character line when the model only produced an interview template."""
+    who = (name or "Pixel").strip() or "Pixel"
     low = re.sub(r"[^a-z0-9' ?]", "", (text or "").lower()).strip()
     if re.search(r"\bhow are (you|ya|u)\b", low):
         return "pretty good, parked on the couch. you?"
     if re.search(r"\b(what('?s| is) your name|who are you)\b", low):
-        return "Pixel."
+        return f"{who}."
     if low in {"yes", "yes?", "yeah", "yeah?", "yep", "yep?"}:
         return "yeah?"
-    if low in {"hey", "hi", "hello", "yo", "sup", "test", "testing", "hey pixel", "hi pixel", "hello pixel"}:
+    greetings = {
+        "hey",
+        "hi",
+        "hello",
+        "yo",
+        "sup",
+        "test",
+        "testing",
+        f"hey {who.lower()}",
+        f"hi {who.lower()}",
+        f"hello {who.lower()}",
+    }
+    if low in greetings:
         return "hey. loud and clear."
     return ""
 
@@ -296,11 +309,15 @@ class ConversationMemory:
         self.viewers: dict[str, Viewer] = {}
         self.threads: dict[str, deque[Turn]] = {}
         self.streamer_display = "Streamer"
+        self.cohost_name = "Cohost"
         self.dirty = False
         self.load()
 
     def set_streamer_display(self, name: str) -> None:
         self.streamer_display = (name or "Streamer").strip() or "Streamer"
+
+    def set_cohost_name(self, name: str) -> None:
+        self.cohost_name = (name or "Cohost").strip() or "Cohost"
 
     def load(self) -> None:
         if not self.path.exists():
@@ -475,7 +492,7 @@ class ConversationMemory:
         self._thread(thread).append(
             Turn(
                 ts=ev.ts,
-                who=user or ("Pixel" if role == "cohost" else self.streamer_display),
+                who=user or (self.cohost_name if role == "cohost" else self.streamer_display),
                 text=text,
                 via=via,
                 role=role,

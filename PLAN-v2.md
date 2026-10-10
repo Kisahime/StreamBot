@@ -247,77 +247,77 @@ Phases:
 
 ### Phase 3: Reliability and latency
 
-- [ ] **V3-01: Non-blocking mic loop with real barge-in**
+- [x] **V3-01: Non-blocking mic loop with real barge-in**
   - *Why:* the mic is deaf while Pixel replies. Fixes: N-12, F-08.
   - *Files:* `src/audio/mic.py`, `src/orchestrator.py` (`on_utterance`), tests
   - *Do:* `_flush` schedules `on_utterance` as a tracked task (cancelling the previous one) instead of awaiting it. Bound `_queue` (`maxsize≈200`, dropping the oldest). When speech starts while `tts.speaking`, call the orchestrator's interrupt (configurable `audio.barge_in: true`).
   - *Acceptance:* test with a fake handler that sleeps 2 s: chunks keep being consumed (the level updates), and a second utterance cancels the first. Manual: talking over Pixel stops her within about 300 ms.
   - *Depends on:* V0-02
 
-- [ ] **V3-02: Echo gate**
+- [x] **V3-02: Echo gate**
   - *Why:* Pixel transcribes herself on speakers. Fixes: N-13, F-09.
   - *Files:* `src/audio/mic.py`, `src/settings.py`, `config.yaml`
   - *Do:* add `audio.echo_gate: true`. While `tts.speaking` (and 300 ms after), ignore energy triggers unless PTT is held or the level is above `energy_threshold * echo_gate_ratio` (default 2.5). It works together with barge-in.
   - *Acceptance:* on speakers, Pixel finishing a sentence doesn't trigger a new turn. Holding PTT still works.
   - *Depends on:* V3-01
 
-- [ ] **V3-03: Wake word and VAD off the event loop, correct input**
+- [x] **V3-03: Wake word and VAD off the event loop, correct input**
   - *Why:* blocking the loop, and probably the wrong audio format. Fixes: N-14, F-28.
   - *Files:* `src/audio/wake.py`, `src/audio/mic.py`, `src/audio/vad.py`, `src/settings.py`, `config.yaml`
   - *Do:* feed openwakeword 1,280-sample int16 frames (convert with `(chunk*32767).astype(np.int16)`) in a worker thread, and read scores only for configured models (`audio.wake_models: ["hey_jarvis"]`, `audio.wake_threshold: 0.5`). Run `has_speech_silero` and `trim_to_speech` via `asyncio.to_thread`. Show the wake score on the dashboard meter.
   - *Acceptance:* with wake on, the dashboard stays responsive (the level meter keeps updating) and the chosen wake phrase arms one utterance. A unit test checks the frame conversion and size.
   - *Depends on:* V3-01
 
-- [ ] **V3-04: Ducking that never ducks Pixel and always restores**
+- [x] **V3-04: Ducking that never ducks Pixel and always restores**
   - *Why:* Pixel's own voice gets ducked, and the volume stays low after a crash. Fixes: N-15.
   - *Files:* `src/audio/duck.py`, `src/main.py`, `README.md`
   - *Do:* refuse endpoint ducking unless `speaker_device` is set to a **different** device than the default output, and say so in `duck.note`. Persist the saved volume to `data/duck.json` and restore it at startup if present. Register an `atexit` restore. Use pycaw per-session volume (other apps' sessions) as an option instead of master volume.
   - *Acceptance:* with `speaker_device: null`, enabling duck shows the note and doesn't change the volume. Killing the app while ducked, then restarting, restores the original volume.
   - *Depends on:* none
 
-- [ ] **V3-05: Expire stale chat and fix mention matching**
+- [x] **V3-05: Expire stale chat and fix mention matching**
   - *Why:* late answers and false mentions. Fixes: N-16, N-17.
   - *Files:* `src/orchestrator.py` (`_pick_chat_target`, `_drain_chat`), `src/twitch/chat.py`, `src/settings.py`, `config.yaml`, tests
   - *Do:* add `chat.max_age_seconds: 45` and drop older pending lines (except streamer lines and allowed commands) with skip reason `stale`. Match mentions with `re.search(rf"(?<![A-Za-z0-9_])@?{re.escape(name)}(?![A-Za-z0-9_])", text, re.I)`.
   - *Acceptance:* tests: "pixelated" isn't a mention, "@Pixel hi" and "pixel?" are; a line older than 45 s is dropped.
   - *Depends on:* V0-02
 
-- [ ] **V3-06: TTS cancel race and speaking state**
+- [x] **V3-06: TTS cancel race and speaking state**
   - *Why:* an interrupt can be undone. Fixes: N-18, F-23.
   - *Files:* `src/tts/piper.py`, `src/orchestrator.py` (`_bump_voice`, `_speak`), tests
   - *Do:* replace the shared `_cancel` with a generation number captured when `speak` is called. A sentence plays only if its generation still matches after acquiring the lock. Optionally stop `sd.play` and `wait` per sentence by playing through an `OutputStream` that can be stopped from another thread.
   - *Acceptance:* test: queue three `speak` calls, interrupt after the first → only one is "played" (fake player).
   - *Depends on:* V1-04
 
-- [ ] **V3-07: EventSub session handling**
+- [x] **V3-07: EventSub session handling**
   - *Why:* events can be missed on reconnect, and dead sockets are slow to detect. Fixes: N-20.
   - *Files:* `src/twitch/eventsub.py`, tests
   - *Do:* on `session_reconnect`, open the new URL and wait for its welcome before closing the old one (no resubscribe needed). Use `keepalive_timeout_seconds` from the welcome message with `asyncio.wait_for` on each receive (+3 s). On `revocation`, broadcast status and drop that feed from the "ok" set. Use exponential backoff 2 → 60 s with jitter.
   - *Acceptance:* tests with a fake WebSocket server (or patched `websockets.connect`) cover welcome, keepalive timeout → reconnect, reconnect URL handover, and revocation shown in health.
   - *Depends on:* V1-03
 
-- [ ] **V3-08: Safe model and device changes**
+- [x] **V3-08: Safe model and device changes**
   - *Why:* Whisper reload races, devices go stale, indexes change. Fixes: N-19, N-21.
   - *Files:* `src/audio/stt.py`, `src/orchestrator.py` (`set_language`, `set_devices`), `src/health.py`, `src/main.py`, `src/web/static/app.js`
   - *Do:* add an `asyncio.Lock` around transcribe and load (or build the new model and swap it in). Add `GET /api/devices?refresh=1` and a **Refresh devices** button that clears the cache. Save the device **name** alongside the index and re-resolve by name at startup. Re-check Ollama in the watchdog every 30 s and patch `status.ollama`.
   - *Acceptance:* changing language mid-speech doesn't crash and the next utterance uses the new language. Plugging in a USB mic then Refresh shows it. Stopping Ollama turns the dashboard pill red within 30 s.
   - *Depends on:* none
 
-- [ ] **V3-09: Tracked background broadcasts and lighter memory pushes**
+- [x] **V3-09: Tracked background broadcasts and lighter memory pushes**
   - *Why:* lost exceptions and wasted work. Fixes: N-22.
   - *Files:* `src/orchestrator.py`, `src/hub.py`
   - *Do:* add `Orchestrator._spawn(coro, name)` that keeps tasks in a set with a done-callback that logs exceptions, and replace all bare `asyncio.create_task(...)` calls. Debounce `memory` broadcasts to at most 2 per second.
   - *Acceptance:* a search for `asyncio.create_task(` in `orchestrator.py` finds only `_spawn`. A forced exception in a broadcast shows in the log.
   - *Depends on:* none
 
-- [ ] **V3-10: Configurable LLM options and timeouts per path**
+- [x] **V3-10: Configurable LLM options and timeouts per path**
   - *Why:* a fixed context and no output cap. Fixes: N-23.
   - *Files:* `src/llm/ollama.py`, `src/settings.py`, `config.yaml`
   - *Do:* add `ollama.num_ctx` (4096), `ollama.num_predict_chat` (80), `ollama.num_predict_voice` (160), `ollama.keep_alive` ("30m"), and an overall timeout of `ollama.chat_timeout_seconds` (20) for chat completions so a slow model can't block the chat worker. Make the `has_model` match exact (name or `name:latest`).
   - *Acceptance:* config changes appear in the request payload (unit test with an httpx mock transport). A hung Ollama makes a chat reply skip with reason `llm timeout` after 20 s.
   - *Depends on:* V0-02
 
-- [ ] **V3-11: Remove hard-coded "Pixel" and dead code**
+- [x] **V3-11: Remove hard-coded "Pixel" and dead code**
   - *Why:* renaming the persona leaves "Pixel" in replies and turns. Fixes: N-24.
   - *Files:* `src/memory.py` (`remember`, `streamer_smalltalk_fallback`), `src/orchestrator.py`, `src/llm/persona.py`, `src/settings.py`
   - *Do:* pass the persona name into `ConversationMemory` (`set_cohost_name`) and into `streamer_smalltalk_fallback(text, name)`. Delete `self.spoken`, `system_prompt`, `build_system_prompt` and `overlay_alert_hold` (or wire the latter as the overlay default via `/api/health`). Use `role:` in `_shared_body` or remove it from the YAML.
