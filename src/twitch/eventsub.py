@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 import websockets
 
+from src.safety import fence_viewer_text
 from src.twitch.auth import CORE_TYPES, feed_for, missing_scope
 
 log = logging.getLogger("cohost.eventsub")
@@ -69,9 +70,9 @@ class StreamEvent:
             return f"{self.user} just subscribed{bit}."
         if self.kind == "resub":
             months = extra.get("months") or extra.get("cumulative_months") or ""
-            msg = extra.get("message") or ""
+            msg = str(extra.get("message") or "")
             bit = f" for {months} months" if months else ""
-            extra_msg = f' They said: "{msg}"' if msg else ""
+            extra_msg = f" They said: {fence_viewer_text(msg, limit=200)}" if msg else ""
             return f"{self.user} just resubbed{bit}.{extra_msg}"
         if self.kind == "gift":
             total = extra.get("total") or 1
@@ -90,8 +91,8 @@ class StreamEvent:
             return f"{who} cheered {bits} bits."
         if self.kind == "redeem":
             title = extra.get("title") or "a reward"
-            note = extra.get("input") or ""
-            bit = f' They said: "{note}"' if note else ""
+            note = str(extra.get("input") or "")
+            bit = f" They said: {fence_viewer_text(note, limit=200)}" if note else ""
             return f"{self.user} redeemed {title}.{bit}"
         if self.kind == "hype_begin":
             train = str(extra.get("train") or "").strip()

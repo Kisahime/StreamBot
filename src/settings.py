@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 QUALITY_MODEL = "qwen2.5:7b-instruct-q4_K_M"
 SNAPPY_MODEL = "qwen2.5:3b"
+WHISPER_LANGUAGES = ("en", "es", "fr", "de", "pt", "ja")
 
 
 def _command_list(data: dict[str, Any], path: str, default: list[str]) -> list[str]:
@@ -117,6 +119,7 @@ class Settings:
         self.memory_viewers = int(_get(data, "memory.viewers", 48))
         self.memory_thread_turns = int(_get(data, "memory.thread_turns", 12))
         self.catchphrase_seconds = float(_get(data, "memory.catchphrase_seconds", 600))
+        self.retention_days = int(_get(data, "memory.retention_days", 14))
 
         self.events_enabled = bool(_get(data, "events.enabled", True))
         self.announce_follows = bool(_get(data, "events.announce_follows", True))
@@ -224,16 +227,28 @@ def _yaml_scalar(value: Any) -> str:
     return str(value)
 
 
+def atomic_write_text(path: Path, text: str, *, backup: bool = False) -> None:
+    """Write ``text`` via a temp file. Optionally copy the current file to ``name.bak``."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if backup and path.exists():
+        shutil.copy2(path, path.with_name(path.name + ".bak"))
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(text.encode("utf-8"))
+    os.replace(tmp, path)
+
+
 def update_config(updates: dict[str, Any], path: Path | None = None) -> None:
     """Update existing scalar keys in config.yaml without dropping comments."""
     cfg_path = path or (ROOT / "config.yaml")
-    lines = cfg_path.read_text(encoding="utf-8").splitlines()
+    raw = cfg_path.read_bytes()
+    newline = "\r\n" if b"\r\n" in raw else "\n"
+    lines = raw.decode("utf-8").splitlines()
     for dotted, value in updates.items():
         if "." not in dotted:
             continue
         section, key = dotted.split(".", 1)
         lines = _set_in_section(lines, section, key, _yaml_scalar(value))
-    cfg_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(cfg_path, newline.join(lines) + newline, backup=True)
 
 
 def _set_in_section(lines: list[str], section: str, key: str, rendered: str) -> list[str]:

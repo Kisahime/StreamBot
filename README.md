@@ -205,6 +205,8 @@ In `config.yaml`: `events.bits`, `events.channel_points`, `events.hype_train`, `
 
 `start.bat` prefers `py -3.11`, then `python`, and requires 3.11 or newer. It reads `server.host` and `server.port`, skips pip when `requirements.txt` has not changed, and opens the booth unless you pass `--no-browser`. If creating the venv, installing dependencies, or reading the config fails, the window stays open and the next launch tries the install again. The install stamp is written only after pip succeeds. Binding anything other than localhost requires `server.allow_remote: true`.
 
+The booth only accepts `Host` values of `127.0.0.1`, `localhost`, and `[::1]`. A page on another site cannot POST into it: writes need `Content-Type: application/json` and the `X-Cohost-Token` from `GET /api/session`, and a foreign `Origin` is rejected. The OBS overlay stays read-only. Each person in the memory panel has **Forget**, which deletes that viewer from `data/memory.json`. Viewer lines are kept for `memory.retention_days` (14). Piper and the three listed voices are checksummed; a partial download stays as a `.part` file until it finishes.
+
 ## Out of scope
 
 No avatar/lip-sync, no cloud models, no auto timeouts or bans. Overlay is captions, a speaking nameplate, and an alert flash.

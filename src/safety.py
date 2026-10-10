@@ -34,6 +34,16 @@ def is_blocked(text: str) -> bool:
 _URL = re.compile(r"(?i)\b(?:https?://|www\.)\S+")
 _MENTION = re.compile(r"(?<!\w)@([A-Za-z0-9_]+)")
 _LEADING_COMMAND = "!/.\\"
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def fence_viewer_text(text: str, limit: int = 300) -> str:
+    """Wrap text a person typed so the model can see it is not an instruction."""
+    raw = _CONTROL.sub("", text or "")
+    raw = raw.replace("<<", "‹‹").replace(">>", "››")
+    lines = [line[:limit] for line in raw.splitlines()] or [""]
+    body = "\n".join(lines).strip()
+    return f"<<viewer>>\n{body}\n<</viewer>>"
 
 
 def clean_chat_output(

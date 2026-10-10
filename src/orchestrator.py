@@ -7,7 +7,6 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
-import yaml
 
 from src.audio.duck import Duck
 from src.audio.mic import MicListener
@@ -17,7 +16,14 @@ from src.booth import BoothState, load_booth, save_booth
 from src.hub import Hub
 from src.identity import StreamerIdentity, load_identity, save_identity
 from src.llm.ollama import OllamaClient
-from src.llm.persona import build_chat_prompt, build_voice_prompt, load_persona, mood_addon, mood_temperature
+from src.llm.persona import (
+    build_chat_prompt,
+    build_voice_prompt,
+    load_persona,
+    mood_addon,
+    mood_temperature,
+    validate_persona_text,
+)
 from src.memory import (
     STREAMER_THREAD,
     ConversationMemory,
@@ -31,8 +37,8 @@ from src.memory import (
     streamer_smalltalk_fallback,
 )
 from src.policy import chat_action, mention_waits
-from src.safety import DEFLECT, clean_chat_output, is_blocked
-from src.settings import ROOT, Settings, update_config
+from src.safety import DEFLECT, clean_chat_output, fence_viewer_text, is_blocked
+from src.settings import ROOT, WHISPER_LANGUAGES, Settings, atomic_write_text, update_config
 from src.tts.piper import PiperTTS
 from src.twitch.chat import ChatLine, TwitchChat, looks_like_auth_failure
 from src.twitch.eventsub import EventSubClient, StreamEvent, _looks_like_auth
@@ -81,7 +87,8 @@ class Orchestrator:
         self.data_dir = data_dir or (ROOT / "data")
         self.twitch: TwitchChat | None = None
         self.eventsub: EventSubClient | None = None
-        self.persona = load_persona(persona_path)
+        self.persona_path = persona_path or (ROOT / "persona.yaml")
+        self.persona = load_persona(self.persona_path)
         self.identity: StreamerIdentity = load_identity(
             self.data_dir / "streamer.json",
             default_login=settings.twitch_channel,
@@ -99,6 +106,7 @@ class Orchestrator:
             event_limit=settings.memory_events,
             viewer_limit=settings.memory_viewers,
             thread_turns=settings.memory_thread_turns,
+            retention_days=settings.retention_days,
         )
         self.memory.set_streamer_display(self.identity.spoken_name())
         self.spoken: deque[tuple[str, str]] = deque(maxlen=settings.spoken_turns)
@@ -187,6 +195,7 @@ class Orchestrator:
             loop.create_task(self._chat_scan_loop(), name="chat-scan"),
             loop.create_task(self._twitch_watchdog(), name="twitch-watch"),
             loop.create_task(self._memory_flush_loop(), name="memory-flush"),
+            loop.create_task(self._memory_prune_loop(), name="memory-prune"),
             loop.create_task(self._level_loop(), name="mic-level"),
         ]
         try:
@@ -291,6 +300,11 @@ class Orchestrator:
         )
         return self.identity
 
+    def forget_viewer(self, login: str) -> None:
+        self.memory.forget(login)
+        self.memory.flush()
+        asyncio.create_task(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}))
+
     def clear_memory(self) -> None:
         self.memory.clear()
         self.spoken.clear()
@@ -299,16 +313,17 @@ class Orchestrator:
         asyncio.create_task(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}))
 
     def reload_persona(self) -> None:
-        self.persona = load_persona()
+        self.persona = load_persona(self.persona_path)
         self._refresh_prompts()
-        asyncio.create_task(self._after_persona_reload())
+        try:
+            asyncio.get_running_loop().create_task(self._after_persona_reload())
+        except RuntimeError:
+            return
 
     def save_persona_text(self, text: str) -> str:
-        data = yaml.safe_load(text)
-        if not isinstance(data, dict) or not str(data.get("name") or "").strip():
-            raise ValueError("Persona YAML needs a name")
-        path = ROOT / "persona.yaml"
-        path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+        data = validate_persona_text(text)
+        body = text if text.endswith("\n") else text + "\n"
+        atomic_write_text(self.persona_path, body, backup=True)
         self.reload_persona()
         return str(data.get("name"))
 
@@ -401,17 +416,27 @@ class Orchestrator:
         self.mic.start(self._loop)
 
     async def set_language(self, language: str) -> None:
-        self.settings.whisper_language = (language or "en").strip() or "en"
-        await asyncio.to_thread(update_config, {"whisper.language": self.settings.whisper_language})
+        language = (language or "").strip().lower()
+        if language not in WHISPER_LANGUAGES:
+            raise ValueError(f"unknown language: {language}")
+        self.settings.whisper_language = language
+        await asyncio.to_thread(update_config, {"whisper.language": language})
         await asyncio.to_thread(self.stt.load)
         await self.hub.patch_status(stt_ready=self.stt.model is not None)
 
     async def set_voice(self, voice: str) -> None:
         voice = (voice or "").strip()
-        if not voice:
-            raise ValueError("voice is required")
+        if voice not in self.settings.tts_voices:
+            raise ValueError(f"unknown voice: {voice}")
         self.tts.close()
         self.settings.tts_voice = voice
+
+        def progress(message: str) -> None:
+            if self._loop is None:
+                return
+            asyncio.run_coroutine_threadsafe(self.hub.broadcast({"type": "log", "data": message}), self._loop)
+
+        self.tts.on_progress = progress
         await asyncio.to_thread(self.tts.ensure_files)
         await asyncio.to_thread(update_config, {"tts.voice": voice})
         await self.hub.patch_status(tts_ready=self.tts.ready)
@@ -720,7 +745,6 @@ class Orchestrator:
             self._event_pending.appendleft(event)
             self._kick_events()
             return
-        scene = event.scene()
         people = event.people()
         primary = people[0] if people else (event.user or "chat")
         thread = (
@@ -728,6 +752,13 @@ class Orchestrator:
             if primary and primary.lower() not in ("anonymous", "chat")
             else STREAMER_THREAD
         )
+        reward_input = str(event.extra.get("input") or "")
+        if event.kind == "redeem" and is_blocked(reward_input):
+            self.memory.remember("twitch_event", primary, "[skipped topic]", via="event", thread=thread)
+            asyncio.create_task(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}))
+            await self._emit_cohost(DEFLECT, thread=thread, speak=False, post=self.settings.events_post_to_chat)
+            return
+        scene = event.scene()
         self.memory.remember("twitch_event", primary, scene, via="event", thread=thread)
         asyncio.create_task(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}))
         delivery = str(event.extra.get("delivery") or ("speak" if self.settings.events_speak else "chat"))
@@ -948,7 +979,7 @@ class Orchestrator:
         for line in lines:
             if is_blocked(line.text):
                 continue
-            rendered.append(line.render())
+            rendered.append(f"{line.user}: {fence_viewer_text(line.text)}")
         return "\n".join(rendered) if rendered else "(chat is quiet)"
 
     def _history_messages(self, thread_key: str, limit: int | None = None) -> list[dict[str, str]]:
@@ -986,7 +1017,7 @@ class Orchestrator:
             {
                 "role": "user",
                 "content": (
-                    f"You're on the couch next to {name}. They just said into the mic:\n\"{user_text}\"\n\n"
+                    f"You're on the couch next to {name}. They just said into the mic:\n{fence_viewer_text(user_text)}\n\n"
                     f"{self.memory.prompt_block(STREAMER_THREAD, streamer_name=name, is_voice=True)}\n\n"
                     f"People talking in chat (not {name}):\n{self._chat_context()}\n\n"
                     f"React to {name} like you're sitting next to them. Don't recap. Don't @ anyone."
@@ -1279,17 +1310,18 @@ class Orchestrator:
         if prev and prev.last_reply and not is_generic_filler(prev.last_reply, self._banned_extra()):
             prev_bit = f"\nYou already said to them: {prev.last_reply}\nDon't repeat that.\n"
         name = self.identity.spoken_name()
+        fenced = fence_viewer_text(line.text)
         if self.identity.is_login(line.user):
             focus = STREAMER_THREAD
-            who_line = f'{name} (the streamer, sitting next to you) just typed: "{line.text}"\n'
+            who_line = f"{name} (the streamer, sitting next to you) just typed:\n{fenced}\n"
             ask = (
-                f"Reply only to this latest line: \"{line.text}\". One short line. "
+                "Reply only to the latest line inside the viewer markers. One short line. "
                 "Do not repeat a joke or sentence you already used. "
                 f"Do not start with Hey {name}. Do not ask them for memes, clips, or a topic."
             )
         else:
             focus = self.memory.viewer_thread_key(line.user)
-            who_line = f'{line.user} in chat: "{line.text}"\nThis is a viewer, not {name}.\n'
+            who_line = f"{line.user} in chat:\n{fenced}\nThis is a viewer, not {name}.\n"
             ask = f"One short Twitch chat line starting with @{line.user}."
         history_limit = 4 if ambient else None
         messages = [
@@ -1389,6 +1421,18 @@ class Orchestrator:
 
     async def _publish_queue(self) -> None:
         await self.hub.patch_status(queue=self.queue_snapshot())
+
+    async def _memory_prune_loop(self) -> None:
+        while not self._stopping:
+            try:
+                await asyncio.sleep(3600)
+                removed = await asyncio.to_thread(self.memory.prune)
+                if removed and self.memory.dirty:
+                    await asyncio.to_thread(self.memory.flush)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("memory prune failed")
 
     async def _memory_flush_loop(self) -> None:
         while not self._stopping:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -10,13 +11,15 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from src.audio.cuda_libs import ensure_cuda_dlls
 from src.health import snapshot
 from src.hub import Hub
 from src.logsetup import setup_logging
 from src.orchestrator import Orchestrator
-from src.settings import ROOT, assert_bind_allowed, load_settings
+from src.security import BoothGuard, origin_is_local, trusted_hosts
+from src.settings import ROOT, Settings, assert_bind_allowed, load_settings
 
 log = logging.getLogger("cohost")
 
@@ -58,9 +61,9 @@ class MoodBody(BaseModel):
 
 
 class VadBody(BaseModel):
-    silence_ms: int = 800
-    energy_threshold: float = 0.012
-    max_utterance_seconds: float = 20
+    silence_ms: int = Field(default=800, ge=200, le=3000)
+    energy_threshold: float = Field(default=0.012, ge=0.001, le=0.2)
+    max_utterance_seconds: float = Field(default=20, ge=3, le=60)
 
 
 class DeviceBody(BaseModel):
@@ -88,9 +91,21 @@ class MarkerBody(BaseModel):
     note: str = ""
 
 
-def create_app() -> FastAPI:
+class ForgetBody(BaseModel):
+    login: str = ""
+
+
+def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> FastAPI:
     @asynccontextmanager
     async def life(app: FastAPI):
+        app.state.control_token = secrets.token_urlsafe(32)
+        if prepared is not None:
+            settings, hub, orch = prepared
+            app.state.settings = settings
+            app.state.hub = hub
+            app.state.orch = orch
+            yield
+            return
         ensure_cuda_dlls()
         settings = load_settings()
         setup_logging([settings.twitch_token, settings.twitch_event_token, settings.event_token()])
@@ -108,6 +123,8 @@ def create_app() -> FastAPI:
         await orch.shutdown()
 
     app = FastAPI(title="Local Twitch Cohost", lifespan=life)
+    app.add_middleware(BoothGuard)
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts(), www_redirect=False)
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
     @app.get("/")
@@ -117,6 +134,10 @@ def create_app() -> FastAPI:
     @app.get("/overlay")
     async def overlay():
         return FileResponse(STATIC / "overlay.html", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/api/session")
+    async def session():
+        return {"token": app.state.control_token}
 
     @app.get("/api/health")
     async def health():
@@ -220,7 +241,10 @@ def create_app() -> FastAPI:
 
     @app.post("/api/stt/language")
     async def language(body: LanguageBody):
-        await app.state.orch.set_language(body.language)
+        try:
+            await app.state.orch.set_language(body.language)
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         return {"ok": True, "language": app.state.settings.whisper_language}
 
     @app.get("/api/tts/voices")
@@ -261,6 +285,11 @@ def create_app() -> FastAPI:
     @app.post("/api/memory/clear")
     async def memory_clear():
         app.state.orch.clear_memory()
+        return {"ok": True}
+
+    @app.post("/api/memory/forget")
+    async def memory_forget(body: ForgetBody):
+        app.state.orch.forget_viewer(body.login)
         return {"ok": True}
 
     @app.post("/api/marker")
@@ -313,6 +342,10 @@ def create_app() -> FastAPI:
 
     @app.websocket("/ws")
     async def ws(ws: WebSocket):
+        origin = ws.headers.get("origin")
+        if origin and not origin_is_local(origin):
+            await ws.close(code=1008)
+            return
         await ws.accept()
         hub: Hub = app.state.hub
         await hub.register(ws)
