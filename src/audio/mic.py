@@ -10,7 +10,7 @@ import numpy as np
 import sounddevice as sd
 
 from src.audio.vad import has_speech_silero, rms
-from src.audio.wake import WakeWord
+from src.audio.wake import WAKE_FRAME, WakeWord
 from src.settings import Settings
 
 log = logging.getLogger("cohost.mic")
@@ -46,8 +46,8 @@ class MicListener:
         self.level = 0.0
         self.wake = WakeWord(settings)
         self.wake_score = 0.0
-        self._wake_buf: deque[np.ndarray] = deque()
-        self._wake_samples = 0
+        self._wake_carry = np.zeros(0, dtype=np.float32)
+        self._wake_backlog: list[np.ndarray] = []
         self._wake_latch = False
         self._spoke_at = 0.0
         self._barge_sent = False
@@ -139,6 +139,24 @@ class MicListener:
         if self.on_barge is not None:
             self.on_barge()
 
+    def _take_wake_frames(self, chunk: np.ndarray) -> None:
+        piece = np.asarray(chunk, dtype=np.float32)
+        audio = np.concatenate((self._wake_carry, piece)) if self._wake_carry.size else piece
+        count = (int(audio.size) // WAKE_FRAME) * WAKE_FRAME
+        if count:
+            self._wake_backlog.append(np.ascontiguousarray(audio[:count]))
+        self._wake_carry = np.ascontiguousarray(audio[count:])
+
+    def _pump_wake(self, *, force: bool = False) -> None:
+        if self._wake_latch or not self._wake_backlog:
+            return
+        if not force and self._wake_task is not None and not self._wake_task.done():
+            return
+        batch = self._wake_backlog
+        self._wake_backlog = []
+        audio = np.concatenate(batch)
+        self._wake_task = asyncio.create_task(self._score_wake(audio), name="wake-score")
+
     async def _score_wake(self, audio: np.ndarray) -> None:
         try:
             score, heard = await asyncio.to_thread(self.wake.evaluate, audio)
@@ -148,6 +166,8 @@ class MicListener:
         self.wake_score = score
         if heard:
             self._wake_latch = True
+            return
+        self._pump_wake(force=True)
 
     def _schedule_utterance(self, audio: np.ndarray) -> None:
         previous = self._utterance_task
@@ -170,7 +190,6 @@ class MicListener:
         captured = 0
         silent = 0
         ptt_was_down = False
-        wake_need = int(sr * 0.08)
 
         while True:
             chunk = await self._queue.get()
@@ -184,15 +203,8 @@ class MicListener:
                 wake_hit = True
             armed = self.listen_enabled or self.ptt_down or self._wake_latch or wake_hit
             if not armed and self.wake.model is not None:
-                self._wake_buf.append(chunk)
-                self._wake_samples += len(chunk)
-                while self._wake_samples > wake_need * 4 and self._wake_buf:
-                    dropped = self._wake_buf.popleft()
-                    self._wake_samples -= len(dropped)
-                ready = self._wake_samples >= wake_need and (self._wake_task is None or self._wake_task.done())
-                if ready:
-                    audio = np.concatenate(list(self._wake_buf))
-                    self._wake_task = asyncio.create_task(self._score_wake(audio), name="wake-score")
+                self._take_wake_frames(chunk)
+                self._pump_wake()
 
             if not armed:
                 if capturing and captured >= min_len:

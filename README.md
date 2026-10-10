@@ -122,7 +122,7 @@ These optional feeds are **off** in the shipped `config.yaml`: bits, channel poi
 
 Pixel's spoken audio can go to a virtual cable (VB-Audio, VoiceMeeter). The device list labels those outputs; pick one in the booth. The default output is not changed until you pick it.
 
-Music ducking is off. Preferred setup: music on its own OBS track, sidechained to the cohost cable. `audio.duck_enabled: true` lowers other apps' per-session volume (pycaw) while Pixel talks, and only when `speaker_device` is a different device than the default output. With `speaker_device: null` the booth shows a note and does not change the volume. The pre-duck levels are stored in `data/duck.json` and restored on the next launch, and again if the process exits while ducked.
+Music ducking is off. Preferred setup: music on its own OBS track, sidechained to the cohost cable. `audio.duck_enabled: true` is per-app session ducking: on Windows, pycaw lowers other apps' session volume while Pixel talks. `speaker_device` may stay null. Pixel's own process is never ducked. `audio.duck_skip` (default `obs64.exe` and `Discord.exe`) is also left alone. An empty `audio.duck_apps` list ducks every other app; a non-empty list ducks only those process names. The pre-duck levels are stored in `data/duck.json` and restored on the next launch, and again if the process exits while ducked. Without pycaw the booth stays on the OBS sidechain and does not change the volume.
 
 Edit `persona.yaml` anytime, then click **Reload persona**. No restart needed.
 
@@ -183,7 +183,7 @@ Logs go to `logs/cohost.log` (rotating, about 2 MB, three backups). That directo
 
 Optional extras are not installed by either file. Add them yourself when you turn the feature on:
 
-- `pycaw` — Windows endpoint ducking when `audio.duck_enabled: true`
+- `pycaw` — per-app session ducking when `audio.duck_enabled: true`
 - `openwakeword` — local wake word when `audio.wake_word: true`
 
 To bump a pin: upgrade that package in the project venv (`python -m pip install --upgrade some-package`), run `python -m pip freeze`, and copy the new `name==version` into `requirements.txt` if the app imports it, or into `requirements-dev.txt` if it is only `pytest` or `ruff`. Leave `pytest` and `ruff` out of `requirements.txt`. Run the tests before you commit. Do not commit `.env`.
@@ -253,7 +253,7 @@ powershell -File scripts\backup.ps1
 
 `start.bat` prefers `py -3.11`, then `python`, and requires 3.11 or newer. It reads `server.host` and `server.port`, skips pip when `requirements.txt` has not changed, and opens the booth unless you pass `--no-browser`. If creating the venv, installing dependencies, or reading the config fails, the window stays open and the next launch tries the install again. The install stamp is written only after pip succeeds. Binding anything other than localhost requires `server.allow_remote: true`.
 
-The booth only accepts `Host` values of `127.0.0.1`, `localhost`, and `[::1]`. A page on another site cannot POST into it: writes need `Content-Type: application/json` and the `X-Cohost-Token` from `GET /api/session`, and a foreign `Origin` is rejected. The OBS overlay stays read-only. Each person in the memory panel has **Forget**, which deletes that viewer from `data/memory.json`. Viewer lines are kept for `memory.retention_days` (14). Piper and the three listed voices are checksummed; a partial download stays as a `.part` file until it finishes.
+The booth only accepts `Host` values of `127.0.0.1`, `localhost`, `::1`, and `[::1]`, including the configured port. A page on another site cannot POST into it: writes need `Content-Type: application/json` and the `X-Cohost-Token` from `GET /api/session`, and a foreign `Origin` is rejected. The OBS overlay stays read-only. Each person in the memory panel has **Forget**, which deletes that viewer from `data/memory.json`. Viewer lines are kept for `memory.retention_days` (14). Piper and the three listed voices are checksummed; a partial download stays as a `.part` file until it finishes.
 
 ## Out of scope
 

@@ -577,6 +577,10 @@ class ConversationMemory:
         for turn in list(self._thread(thread_key))[-n:]:
             if turn.role == "cohost":
                 msgs.append({"role": "assistant", "content": turn.text})
+            elif turn.role == "viewer":
+                msgs.append(
+                    {"role": "user", "content": f"{turn.who} ({turn.via}): {fence_viewer_text(turn.text)}"}
+                )
             else:
                 msgs.append({"role": "user", "content": f"{turn.who} ({turn.via}): {turn.text}"})
         return msgs

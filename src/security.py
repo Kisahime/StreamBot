@@ -1,8 +1,10 @@
 """Local-only checks for the booth API and WebSocket.
 
-Starlette compares the hostname after it strips the port, so the bare names are
-what stop a DNS-rebinding Host. The ``:port`` forms are listed as well so a
-raw Host header of ``127.0.0.1:8080`` or ``[::1]:8080`` still counts as the booth.
+Starlette 1.7 compares the hostname after it parses the port, and it keeps the
+brackets on an IPv6 literal. Starlette 1.6 split the header on the first colon,
+so ``[::1]:8080`` became ``[`` and was rejected. The allow list therefore has
+the bare names (including ``::1`` and ``[::1]``) and the same names with the
+configured port, for either parser.
 """
 
 from __future__ import annotations
@@ -14,14 +16,14 @@ from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]", "::1")
 
 
 def trusted_hosts(port: int = 8080) -> list[str]:
     hosts: list[str] = []
     for host in LOCAL_HOSTS:
         hosts.append(host)
-        hosts.append(f"{host}:{port}")
+        hosts.append(f"{host}:{int(port)}")
     return hosts
 
 

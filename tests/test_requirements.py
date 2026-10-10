@@ -23,6 +23,8 @@ def test_runtime_pins_exclude_dev_tools():
         name = line.split("==", 1)[0].split("[", 1)[0].lower()
         assert name not in {"pytest", "ruff"}
     assert "fastapi==0.141.1" in runtime
+    assert "starlette==1.7.0" in runtime
+    assert "anyio==4.15.1" in runtime
     assert "nvidia-cublas-cu12==12.9.2.10" in runtime
     assert "-r requirements.txt" in dev
     assert "pytest==9.1.1" in dev

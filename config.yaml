@@ -13,7 +13,7 @@ ollama:
   num_predict_chat: 80
   num_predict_voice: 160
   keep_alive: 30m
-  # Chat completions give up after this so a slow model can't stall the chat worker.
+  # Bounds chat replies, alert replies, and the recap vibe paragraph.
   chat_timeout_seconds: 20
 
 # snappy: Whisper on CUDA + qwen2.5:3b (fits an 8 GB GPU with Whisper).
@@ -54,9 +54,15 @@ audio:
   min_utterance_ms: 350
   energy_threshold: 0.012   # RMS; raise if it false-triggers
   max_utterance_seconds: 20
-  # Optional. Off by default. Needs pycaw to duck the Windows output; otherwise use an OBS sidechain.
+  # Optional per-app session ducking. Off by default. On Windows, pycaw lowers matching
+  # app sessions while Pixel talks. Pixel's own process is never ducked. An empty
+  # duck_apps list ducks every other app except duck_skip. Without pycaw, use an OBS sidechain.
   duck_enabled: false
   duck_gain: 0.25
+  duck_apps: []
+  duck_skip:
+    - obs64.exe
+    - Discord.exe
   # Talk-over stops Pixel. Echo gate ignores speaker bleed unless PTT is held or the level is much louder.
   barge_in: true
   echo_gate: true

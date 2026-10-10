@@ -7,6 +7,7 @@ collect and run the suite. Twitch credentials are never read from ``.env``.
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 from pathlib import Path
@@ -133,6 +134,22 @@ def fake_twitch_env(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.settings as settings_mod
 
     monkeypatch.setattr(settings_mod, "load_dotenv", lambda *args, **kwargs: False)
+
+    async def _offline_validate(token, client=None):  # noqa: ARG001
+        return {
+            "login": os.environ.get("TWITCH_NICK", ""),
+            "client_id": os.environ.get("TWITCH_CLIENT_ID", ""),
+            "scopes": [
+                "chat:read",
+                "chat:edit",
+                "moderator:read:followers",
+                "channel:read:subscriptions",
+            ],
+            "expires_in": 1_000_000,
+            "user_id": "1",
+        }
+
+    monkeypatch.setattr("src.twitch.auth.validate", _offline_validate)
 
 
 @pytest.fixture

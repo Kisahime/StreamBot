@@ -215,6 +215,59 @@ def test_recap_sections_and_file(tmp_path, settings):
     asyncio.run(run())
 
 
+def test_alert_and_recap_timeouts_keep_going(tmp_path, settings):
+    class SlowThenFast:
+        def __init__(self):
+            self.calls = 0
+            self.last_error = None
+
+        async def complete(self, messages, temperature=0.7, cancel=None):
+            self.calls += 1
+            if self.calls == 1:
+                await asyncio.sleep(60)
+            return "second alert line"
+
+        async def health(self):
+            return {"ok": True, "has_model": True}
+
+        async def aclose(self):
+            return None
+
+    class SleepLLM:
+        async def complete(self, messages, temperature=0.7, cancel=None):
+            await asyncio.sleep(60)
+            return "a long vibe"
+
+        async def health(self):
+            return {"ok": True}
+
+        async def aclose(self):
+            return None
+
+    async def run():
+        settings.chat_timeout_seconds = 0.05
+        settings.events_speak = False
+        orch = make_orch(tmp_path, settings)
+        orch.llm = SlowThenFast()
+        first = StreamEvent(kind="follow", user="Ada")
+        second = StreamEvent(kind="follow", user="Bea")
+        orch._event_pending.append(first)
+        orch._event_pending.append(second)
+        await orch._drain_events()
+        assert orch._last_skip["reason"] == "llm timeout"
+        assert orch.hub.status.get("phase") == "idle"
+        assert any("Ada" in event.text for event in orch.memory.events)
+        assert any("second alert line" in line for line in orch.twitch.sent)
+        assert orch.llm.calls >= 2
+
+        orch.llm = SleepLLM()
+        result = await orch.make_recap(vibe=True)
+        assert "## Vibe" not in result["markdown"]
+        assert "a long vibe" not in result["markdown"]
+
+    asyncio.run(run())
+
+
 def test_mod_pixel_controls_and_viewer_is_ignored(tmp_path, settings):
     async def run():
         settings.control_cooldown_seconds = 30
