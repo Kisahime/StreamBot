@@ -388,28 +388,28 @@ Phases:
 
 ### Phase 5: Polish, tests, docs and packaging
 
-- [ ] **V5-01: API and integration tests**
+- [x] **V5-01: API and integration tests**
   - *Why:* routes and wiring are untested. Fixes: N-25.
   - *Files:* create `tests/test_api.py`, `tests/test_eventsub_session.py`, `tests/test_piper.py`, `tests/test_settings.py`
   - *Do:* use `TestClient(create_app())` with a fake orchestrator injected (add a factory argument to `create_app`). Test `update_config` round-trips with comments, the mic state machine with synthetic chunks, and `safety.is_blocked` cases.
   - *Acceptance:* line coverage over 60% for `main.py`, `settings.py`, `memory.py`, `policy.py` and `safety.py` (`pytest --cov`, added to dev requirements).
   - *Depends on:* V0-02, V2-01
 
-- [ ] **V5-02: Dashboard state sync and error handling**
+- [x] **V5-02: Dashboard state sync and error handling**
   - *Why:* checkboxes don't reflect the server, and there are unhandled promise rejections. Fixes: N-26.
   - *Files:* `src/web/static/app.js`, `src/hub.py` (add `post_voice`, `duck_enabled` and `wake` to status), `src/orchestrator.py`
   - *Do:* include `post_voice` and `duck_enabled` in status and set the checkboxes from it. Wrap every `defPost` call in a shared handler that shows `hint`. Guard `JSON.parse`. Show a "reconnecting…" banner when `/ws` drops.
   - *Acceptance:* toggling **Post voice** in one tab updates another tab. Stopping the server shows the banner, with no unhandled rejections in the console.
   - *Depends on:* V2-01
 
-- [ ] **V5-03: README refresh**
+- [x] **V5-03: README refresh**
   - *Why:* the scope list, scopes table and new controls need documenting.
   - *Files:* `README.md`, `.env.example`
   - *Do:* add a per-feature Twitch scopes table (N-04), the security model (localhost only, control token), the mod-only commands, the profiles, `requirements-dev.txt`/tests/CI, and log file location. Fix "Optional, off by default" to match `config.yaml`.
   - *Acceptance:* a fresh reader can generate a token with the right scopes from the README alone, and the defaults described match `config.yaml`.
   - *Depends on:* V1-03, V2-01
 
-- [ ] **V5-04: One-click update and backup script**
+- [x] **V5-04: One-click update and backup script**
   - *Why:* `data/` (memory, booth, identity) and `persona.yaml` are valuable and not in git.
   - *Files:* create `scripts/backup.ps1`; edit `README.md`
   - *Do:* zip `data/`, `persona.yaml` and `config.yaml` (never `.env`) to `backups/YYYYMMDD-HHMM.zip` and keep the last 10. Add `backups/` to `.gitignore`.

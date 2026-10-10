@@ -39,6 +39,9 @@ class Hub:
             "twitch_error": "",
             "eventsub_error": "",
             "duck": "off",
+            "post_voice": True,
+            "duck_enabled": False,
+            "wake": {"enabled": False},
         }
         self._memory_pending: dict[str, Any] | None = None
         self._memory_task: asyncio.Task | None = None

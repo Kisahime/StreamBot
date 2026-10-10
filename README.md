@@ -39,9 +39,9 @@ Built for an **8 GB NVIDIA GPU**. Default model is `qwen2.5:3b` so Whisper can s
 
    - `TWITCH_NICK` — bot account login
    - `TWITCH_CHANNEL` — the channel to join (your stream, no `#`)
-   - `TWITCH_TOKEN` — OAuth token with `chat:read` and `chat:edit`  
-     Create one at [Twitch Token Generator](https://twitchtokengenerator.com/) (custom scope: those two) or via the [Twitch CLI](https://dev.twitch.tv/docs/cli/). Prefix with `oauth:` if it is missing.
-   - Follows / subs / raids: see **IRC vs EventSub** below.
+   - `TWITCH_TOKEN` — OAuth token. The scopes depend on who the token belongs to. The full list is in **Twitch scopes** below.
+     Create one at [Twitch Token Generator](https://twitchtokengenerator.com/) (Custom Scope) or via the [Twitch CLI](https://dev.twitch.tv/docs/cli/). Prefix with `oauth:` if it is missing.
+   - Follows / subs / raids: see **IRC vs EventSub** and **Twitch scopes** below.
 
 3. Double-click `start.bat` (creates `.venv`, installs the pinned runtime deps from `requirements.txt`, starts the app).
 
@@ -62,7 +62,7 @@ These are **not** the same login step. The dashboard **Connect Twitch** button s
 
 **If Pixel chats as your streamer account** (`TWITCH_NICK` is the same as `TWITCH_CHANNEL`):
 
-1. Open [Twitch Token Generator](https://twitchtokengenerator.com/), choose **Custom Scope**, tick all four:
+1. Open [Twitch Token Generator](https://twitchtokengenerator.com/), choose **Custom Scope**, and tick every scope in the **Twitch scopes** table that you want this account to do. The minimum for chat plus follows and subs is:
    - `chat:read`
    - `chat:edit`
    - `moderator:read:followers`
@@ -82,15 +82,29 @@ Chat still works if EventSub fails (wrong Client ID, missing scopes, bot token u
 
 `!so` is for mods and the broadcaster. Viewers are ignored. A second shoutout inside 120 seconds is skipped locally.
 
-These optional feeds are **off** in `config.yaml`. Turn one on only when the event token includes its scope. Hype train uses EventSub version 2 (`channel.hype_train.*`); version 1 was withdrawn.
+`!pixel mute`, `!pixel unmute`, `!pixel chill`, `!pixel hype`, and `!pixel stop` are also mod and broadcaster only. A second one inside 4 seconds is skipped. `!pixel` with anything else, and `!ask`, are spoken for anyone in chat.
 
-| Feed | Scope |
-|---|---|
-| Bits | `bits:read` |
-| Channel points | `channel:read:redemptions` or `channel:manage:redemptions` |
-| Hype train | `channel:read:hype_train` |
-| Polls | `channel:read:polls` or `channel:manage:polls` |
-| Predictions | `channel:read:predictions` or `channel:manage:predictions` |
+## Twitch scopes
+
+Tick these on [Twitch Token Generator](https://twitchtokengenerator.com/) (Custom Scope) when you create the token. Put chat scopes on the account Pixel types as. Put EventSub and Helix scopes on the **channel owner**. One token can carry all of them when Pixel chats as you.
+
+| Feature | Scope | Where it goes |
+|---|---|---|
+| Read chat | `chat:read` | `TWITCH_TOKEN` |
+| Send chat | `chat:edit` | `TWITCH_TOKEN` |
+| Follows | `moderator:read:followers` | event token (`TWITCH_TOKEN` or `TWITCH_EVENT_TOKEN`) |
+| Subs, resubs, gifts | `channel:read:subscriptions` | event token |
+| Bits | `bits:read` | event token |
+| Channel points | `channel:read:redemptions` or `channel:manage:redemptions` | event token |
+| Hype train | `channel:read:hype_train` | event token |
+| Polls | `channel:read:polls` or `channel:manage:polls` | event token |
+| Predictions | `channel:read:predictions` or `channel:manage:predictions` | event token |
+| `!so` / shoutout button | `moderator:manage:shoutouts` | event token |
+| Remember this (stream marker) | `channel:manage:broadcast` | event token |
+
+Copy the page’s Client ID into `TWITCH_CLIENT_ID`. It has to be the app that issued the event token.
+
+These optional feeds are **off** in the shipped `config.yaml`: bits, channel points, hype train, polls, and predictions. Turn one on only when the event token includes its scope. Hype train uses EventSub version 2 (`channel.hype_train.*`); version 1 was withdrawn. Follows, subs, resubs, gifts, and raids are the feeds that stay available when `events.enabled` is true.
 
 ## On stream
 
@@ -155,13 +169,17 @@ Then: `ollama pull qwen2.5:7b-instruct-q4_K_M`
 
 `requirements.txt` is the pinned runtime install (`fastapi==…`, not `>=`). `start.bat` installs that file and nothing else. `pytest` and `ruff` are not in it.
 
-`requirements-dev.txt` is those same pins plus `pytest` and `ruff`:
+`requirements-dev.txt` is those same pins plus `pytest`, `pytest-cov`, and `ruff`:
 
 ```bat
 .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .venv\Scripts\python.exe -m pytest -q
 .venv\Scripts\python.exe -m ruff check src tests
 ```
+
+GitHub Actions runs that lint and the test suite on `windows-latest` with Python 3.11. The tests do not need Twitch credentials, a GPU, models, or an audio device.
+
+Logs go to `logs/cohost.log` (rotating, about 2 MB, three backups). That directory is gitignored.
 
 Optional extras are not installed by either file. Add them yourself when you turn the feature on:
 
@@ -201,9 +219,37 @@ Voice replies can be echoed to chat (`chat.post_voice_replies_to_chat`). Edit `p
 - **Whisper CUDA failed** / **`cublas64_12.dll` not found**: the NVIDIA *driver* is not the CUDA 12 math libraries. Re-run `start.bat` so it installs `nvidia-cublas-cu12` (and friends) into the venv. If a brand-new GPU (RTX 50-series) still errors, the app will retry Whisper on CPU; you can also set `whisper.device: cpu` in `config.yaml`.
 - **Piper missing**: delete `models/piper` and restart so it re-downloads.
 
-## Optional, off by default
+## What the shipped config turns on
 
-In `config.yaml`: `events.bits`, `events.channel_points`, `events.hype_train`, `events.polls`, `events.predictions`, `audio.wake_word`, `audio.duck_enabled`, `safety.allow_links`. Wake word needs `openwakeword` and never replaces hold-to-talk. Channel-point reward titles map to `speak`, `chat`, or `ignore`. Links are stripped from Pixel's chat posts unless `safety.allow_links` is true.
+These match `config.yaml` as it is in the repo:
+
+| Key | Shipped value |
+|---|---|
+| `events.enabled`, `events.speak`, `events.post_to_chat` | true |
+| `chat.post_voice_replies_to_chat` | true |
+| `chat.welcome_first_time` | true |
+| `audio.barge_in`, `audio.echo_gate` | true |
+| `events.bits`, `events.channel_points`, `events.hype_train`, `events.polls`, `events.predictions` | false |
+| `audio.wake_word`, `audio.duck_enabled` | false |
+| `safety.allow_links` | false |
+
+Wake word needs `openwakeword` and never replaces hold-to-talk. Channel-point reward titles map to `speak`, `chat`, or `ignore`. Links are stripped from Pixel's chat posts unless `safety.allow_links` is true.
+
+## Profiles
+
+`config.yaml` has two booth presets. **Just chatting** is hype, a short cooldown, events spoken, voice replies posted, 12 replies a minute. **Focus game** is chill, a long cooldown, events typed, voice replies not posted, 3 replies a minute. The dashboard dropdown calls `POST /api/profile` and stores the name in `data/booth.json`.
+
+## Security
+
+The booth binds to localhost. `server.allow_remote` stays false unless you set it on purpose. Writes need `Content-Type: application/json` and the `X-Cohost-Token` from `GET /api/session` (same browser tab). A foreign `Origin` is rejected. The OBS overlay does not get that token and cannot change anything.
+
+## Backup
+
+`scripts/backup.ps1` zips `data/`, `persona.yaml`, and `config.yaml` into `backups/YYYYMMDD-HHMM.zip` and keeps the last 10. It never puts `.env` in the zip. `backups/` is gitignored.
+
+```powershell
+powershell -File scripts\backup.ps1
+```
 
 `start.bat` prefers `py -3.11`, then `python`, and requires 3.11 or newer. It reads `server.host` and `server.port`, skips pip when `requirements.txt` has not changed, and opens the booth unless you pass `--no-browser`. If creating the venv, installing dependencies, or reading the config fails, the window stays open and the next launch tries the install again. The install stamp is written only after pip succeeds. Binding anything other than localhost requires `server.allow_remote: true`.
 

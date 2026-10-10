@@ -226,6 +226,7 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
     @app.post("/api/chat/post_voice")
     async def post_voice(body: FlagBody):
         app.state.orch.set_post_voice(body.enabled)
+        await app.state.hub.patch_status(post_voice=bool(body.enabled))
         return {"ok": True, "enabled": body.enabled}
 
     @app.post("/api/interrupt")
@@ -290,6 +291,7 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
     @app.post("/api/audio/duck")
     async def duck(body: FlagBody):
         await asyncio.to_thread(app.state.orch.set_duck, body.enabled)
+        await app.state.hub.patch_status(duck_enabled=bool(body.enabled), duck=app.state.orch.duck.mode)
         return {"ok": True, "mode": app.state.orch.duck.mode, "note": app.state.orch.duck.note}
 
     @app.post("/api/stt/language")
