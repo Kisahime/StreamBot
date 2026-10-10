@@ -1,0 +1,4 @@
+# Optional extras. start.bat installs this only when you pass --extras.
+# pycaw is Windows-only session ducking. openwakeword is the local wake word.
+pycaw==20260927
+openwakeword==0.6.0

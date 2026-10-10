@@ -1,12 +1,13 @@
 [project]
 name = "local-twitch-cohost"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local Twitch cohost"
 readme = "README.md"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--cov=src --cov-fail-under=72"
 
 [tool.ruff]
 line-length = 110

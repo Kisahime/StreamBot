@@ -5,6 +5,7 @@ import logging
 import re
 import secrets
 import shutil
+import threading
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
@@ -140,9 +141,9 @@ def replies_too_similar(a: str, b: str) -> bool:
     return len(left & right) / min(len(left), len(right)) >= 0.6
 
 
-def streamer_smalltalk_fallback(text: str, name: str = "Pixel") -> str:
+def streamer_smalltalk_fallback(text: str, name: str = "Cohost") -> str:
     """A short in-character line when the model only produced an interview template."""
-    who = (name or "Pixel").strip() or "Pixel"
+    who = (name or "Cohost").strip() or "Cohost"
     low = re.sub(r"[^a-z0-9' ?]", "", (text or "").lower()).strip()
     if re.search(r"\bhow are (you|ya|u)\b", low):
         return "pretty good, parked on the couch. you?"
@@ -239,6 +240,7 @@ class Event:
     text: str
     via: str = "chat"
     thread: str = ""
+    session_id: str = ""
 
     def line(self) -> str:
         stamp = time.strftime("%H:%M:%S", time.localtime(self.ts))
@@ -283,6 +285,7 @@ class Viewer:
     is_streamer: bool = False
     greeted: bool = False
     greeted_session: str = ""
+    pinned: bool = False
 
 
 STREAMER_THREAD = "streamer"
@@ -304,13 +307,16 @@ class ConversationMemory:
         self.viewer_limit = viewer_limit
         self.thread_turns = thread_turns
         self.retention_days = retention_days
+        self._keep_session_id = session_id is not None
         self.session_id = session_id or secrets.token_hex(8)
+        self.session_started = time.time()
         self.events: deque[Event] = deque(maxlen=event_limit)
         self.viewers: dict[str, Viewer] = {}
         self.threads: dict[str, deque[Turn]] = {}
         self.streamer_display = "Streamer"
         self.cohost_name = "Cohost"
         self.dirty = False
+        self._transcript_lock = threading.Lock()
         self.load()
 
     def set_streamer_display(self, name: str) -> None:
@@ -367,6 +373,14 @@ class ConversationMemory:
                 except Exception:
                     continue
             self.threads[key] = dq
+        if not self._keep_session_id and data.get("session_id"):
+            self.session_id = str(data.get("session_id") or self.session_id)
+        started = data.get("session_started")
+        if started:
+            try:
+                self.session_started = float(started)
+            except (TypeError, ValueError):
+                pass
 
     def save(self) -> None:
         self.dirty = True
@@ -380,6 +394,8 @@ class ConversationMemory:
             "events": [asdict(e) for e in self.events],
             "viewers": {k: asdict(v) for k, v in self.viewers.items()},
             "threads": {k: [asdict(t) for t in turns] for k, turns in self.threads.items()},
+            "session_id": self.session_id,
+            "session_started": self.session_started,
         }
         raw = json.dumps(payload, ensure_ascii=False, indent=2)
         tmp = self.path.with_suffix(".json.tmp")
@@ -421,6 +437,39 @@ class ConversationMemory:
         self.viewers[key] = viewer
         self.save()
 
+    def remove_note(self, key: str, note: str) -> bool:
+        viewer = self.viewers.get(key)
+        if viewer is None:
+            return False
+        target = (note or "").strip()
+        kept = [item for item in viewer.notes if item != target]
+        if len(kept) == len(viewer.notes):
+            return False
+        viewer.notes = kept
+        self.viewers[key] = viewer
+        self.save()
+        return True
+
+    def set_pinned(self, key: str, pinned: bool) -> None:
+        viewer = self.viewers.get(key)
+        if viewer is None:
+            viewer = Viewer(name=self.streamer_display if key == STREAMER_THREAD else key, is_streamer=key == STREAMER_THREAD)
+        viewer.pinned = bool(pinned)
+        viewer.last_ts = viewer.last_ts or time.time()
+        self.viewers[key] = viewer
+        self.save()
+
+    def start_session(self) -> str:
+        """Rotate the session id. Blank event ids stay with the session that just ended."""
+        previous = self.session_id
+        for event in self.events:
+            if not event.session_id:
+                event.session_id = previous
+        self.session_id = secrets.token_hex(8)
+        self.session_started = time.time()
+        self.save()
+        return self.session_id
+
     def _maybe_note(self, key: str, text: str) -> None:
         if not NOTE_RE.search(text or ""):
             return
@@ -454,7 +503,15 @@ class ConversationMemory:
                 thread = self.viewer_thread_key(user)
             else:
                 thread = STREAMER_THREAD
-        ev = Event(ts=time.time(), kind=kind, user=user, text=text, via=via, thread=thread)
+        ev = Event(
+            ts=time.time(),
+            kind=kind,
+            user=user,
+            text=text,
+            via=via,
+            thread=thread,
+            session_id=self.session_id,
+        )
         self.events.append(ev)
 
         if kind.startswith("streamer"):
@@ -499,6 +556,7 @@ class ConversationMemory:
             )
         )
         self.save()
+        self._append_transcript(ev)
         return ev
 
     def note_reply_to(self, user: str, reply: str, thread: str | None = None) -> None:
@@ -541,6 +599,7 @@ class ConversationMemory:
             (event for event in self.events if (event.user or "").lower() != key),
             maxlen=self.event_limit,
         )
+        self._scrub_transcripts(key)
         self.save()
 
     def prune(self, now: float | None = None) -> int:
@@ -559,11 +618,90 @@ class ConversationMemory:
             else:
                 self.threads.pop(key, None)
         for key, viewer in list(self.viewers.items()):
+            if viewer.pinned:
+                continue
             if viewer.last_ts and viewer.last_ts < cutoff:
                 self.viewers.pop(key, None)
                 removed += 1
+        removed += self._prune_transcripts(cutoff)
         if removed:
             self.save()
+        return removed
+
+    def sessions_dir(self) -> Path:
+        return self.path.parent / "sessions"
+
+    def transcript_path(self, session_id: str | None = None) -> Path:
+        sid = session_id or self.session_id
+        return self.sessions_dir() / f"{sid}.jsonl"
+
+    def _append_transcript(self, ev: Event) -> None:
+        row = {
+            "ts": ev.ts,
+            "kind": ev.kind,
+            "user": ev.user,
+            "text": ev.text,
+            "via": ev.via,
+            "session_id": ev.session_id,
+        }
+        try:
+            with self._transcript_lock:
+                folder = self.sessions_dir()
+                folder.mkdir(parents=True, exist_ok=True)
+                with self.transcript_path().open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except OSError:
+            log.exception("transcript append failed")
+
+    def _scrub_transcripts(self, login: str) -> None:
+        folder = self.sessions_dir()
+        if not folder.exists():
+            return
+        key = (login or "").lower()
+        try:
+            with self._transcript_lock:
+                for path in folder.glob("*.jsonl"):
+                    self._rewrite_transcript(path, key)
+        except OSError:
+            log.exception("transcript scrub failed")
+
+    def _rewrite_transcript(self, path: Path, login: str) -> None:
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            log.exception("could not read %s", path)
+            return
+        kept: list[str] = []
+        for line in raw.splitlines():
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                kept.append(line)
+                continue
+            if str(item.get("user") or "").lower() == login:
+                continue
+            kept.append(line)
+        body = ("\n".join(kept) + "\n") if kept else ""
+        path.write_text(body, encoding="utf-8")
+
+    def _prune_transcripts(self, cutoff: float) -> int:
+        folder = self.sessions_dir()
+        if not folder.exists():
+            return 0
+        removed = 0
+        try:
+            with self._transcript_lock:
+                for path in folder.glob("*.jsonl"):
+                    try:
+                        if path.stat().st_mtime < cutoff:
+                            path.unlink()
+                            removed += 1
+                    except OSError:
+                        log.exception("could not prune %s", path)
+        except OSError:
+            log.exception("transcript prune failed")
         return removed
 
     def viewer(self, name: str) -> Viewer | None:
@@ -684,15 +822,17 @@ class ConversationMemory:
             "last_reply": v.last_reply,
             "greeted": self.is_greeted(v),
             "notes": list(v.notes),
+            "pinned": bool(v.pinned),
             "thread": turns,
         }
 
     def _trim_viewers(self) -> None:
-        extras = {k: v for k, v in self.viewers.items() if k != STREAMER_THREAD}
-        if len(extras) <= self.viewer_limit:
+        extras = {k: v for k, v in self.viewers.items() if k != STREAMER_THREAD and not v.pinned}
+        pinned = sum(1 for v in self.viewers.values() if v.pinned and not v.is_streamer)
+        if len(extras) + pinned <= self.viewer_limit:
             return
         ranked = sorted(extras.items(), key=lambda kv: kv[1].last_ts)
-        drop = len(extras) - self.viewer_limit
+        drop = len(extras) + pinned - self.viewer_limit
         for key, _ in ranked[:drop]:
             self.viewers.pop(key, None)
             self.threads.pop(self.viewer_thread_key(key), None)

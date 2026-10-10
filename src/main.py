@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -97,6 +97,13 @@ class ForgetBody(BaseModel):
     login: str = ""
 
 
+class NoteBody(BaseModel):
+    login: str = ""
+    text: str = ""
+    op: str = "add"
+    pinned: bool | None = None
+
+
 class IdBody(BaseModel):
     id: str = ""
 
@@ -107,6 +114,10 @@ class ProfileBody(BaseModel):
 
 class RecapBody(BaseModel):
     vibe: bool = False
+
+
+class DebugLogBody(BaseModel):
+    enabled: bool = True
 
 
 def _booth_port(prepared: tuple[Settings, Hub, Orchestrator] | None) -> int:
@@ -123,7 +134,7 @@ def _booth_port(prepared: tuple[Settings, Hub, Orchestrator] | None) -> int:
         with (ROOT / "config.yaml").open(encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
         return int((data.get("server") or {}).get("port") or 8080)
-    except (OSError, TypeError, ValueError):
+    except Exception:
         return 8080
 
 
@@ -131,6 +142,7 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
     @asynccontextmanager
     async def life(app: FastAPI):
         app.state.control_token = secrets.token_urlsafe(32)
+        app.state.control_key = os.getenv("COHOST_CONTROL_KEY", "").strip()
         if prepared is not None:
             settings, hub, orch = prepared
             app.state.settings = settings
@@ -140,7 +152,11 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
             return
         ensure_cuda_dlls()
         settings = load_settings()
-        setup_logging([settings.twitch_token, settings.twitch_event_token, settings.event_token()])
+        setup_logging(
+            [settings.twitch_token, settings.twitch_event_token, settings.event_token()],
+            level=settings.log_level,
+            debug_modules=settings.log_debug_modules,
+        )
         bind = os.getenv("COHOST_BIND_HOST", settings.host)
         assert_bind_allowed(bind, settings.allow_remote)
         if settings.missing_secrets() and os.getenv("COHOST_SKIP_SECRET_CHECK") != "1":
@@ -170,6 +186,19 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
     @app.get("/api/session")
     async def session():
         return {"token": app.state.control_token}
+
+    @app.get("/api/transcript")
+    async def transcript():
+        memory = app.state.orch.memory
+        path = memory.transcript_path()
+        filename = f"{memory.session_id}.jsonl"
+        if not path.exists():
+            return Response(
+                b"",
+                media_type="application/x-ndjson",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+        return FileResponse(path, filename=filename, media_type="application/x-ndjson")
 
     @app.get("/api/health")
     async def health():
@@ -264,7 +293,8 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
 
     @app.get("/api/persona")
     async def persona_get():
-        text = (ROOT / "persona.yaml").read_text(encoding="utf-8")
+        path = app.state.orch.persona_path
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
         return {"text": text, "name": app.state.orch.persona.get("name")}
 
     @app.post("/api/persona")
@@ -279,6 +309,15 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
     async def persona_reload():
         app.state.orch.reload_persona()
         return {"ok": True, "name": app.state.orch.persona.get("name")}
+
+    @app.post("/api/logging/debug")
+    async def debug_logging(body: DebugLogBody):
+        if body.enabled:
+            await app.state.orch.enable_debug_log()
+            return {"ok": True, "debug": True, "seconds": 600}
+        app.state.orch.restore_log_level()
+        app.state.orch._debug_log_active = False
+        return {"ok": True, "debug": False}
 
     @app.post("/api/mood")
     async def mood(body: MoodBody):
@@ -365,9 +404,22 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
         app.state.orch.forget_viewer(body.login)
         return {"ok": True}
 
+    @app.post("/api/memory/note")
+    async def memory_note(body: NoteBody):
+        snap = await app.state.orch.edit_note(body.login, body.text, body.op, body.pinned)
+        return {"ok": True, "memory": snap}
+
     @app.post("/api/marker")
     async def marker(body: MarkerBody):
         result = await app.state.orch.mark_moment(body.note)
+        return {"ok": True, **result}
+
+    @app.post("/api/clip")
+    async def clip():
+        try:
+            result = await app.state.orch.create_clip()
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         return {"ok": True, **result}
 
     @app.post("/api/twitch/connect")

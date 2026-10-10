@@ -84,9 +84,12 @@ class FakeChat:
     def __init__(self):
         self.connected = True
         self.sent = []
+        self.replies = []
 
-    async def send(self, text):
+    async def send(self, text, reply_parent=""):
         self.sent.append(text)
+        if reply_parent:
+            self.replies.append(reply_parent)
 
     def recent(self, n):
         return []

@@ -30,7 +30,7 @@ def test_similar_replies_and_smalltalk_fallback():
         "Hey luna! Clip or moment or something caught your eye?",
     )
     assert streamer_smalltalk_fallback("how are you?") == "pretty good, parked on the couch. you?"
-    assert streamer_smalltalk_fallback("what is your name?") == "Pixel."
+    assert streamer_smalltalk_fallback("what is your name?") == "Cohost."
     assert is_generic_filler("hey lunaversevt—got any good memes?")
     assert streamer_smalltalk_fallback("I just died again") == ""
 

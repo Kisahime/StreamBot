@@ -17,17 +17,28 @@ def test_start_bat_fails_loudly_and_stamps_only_after_pip():
     assert install_at < error_at < stamp_at
     assert "Failed to create the virtualenv." in text
     assert "Could not read server.host and server.port" in text
+    assert "set EXTRAS=0" in text
+    gate = text.index('if "%EXTRAS%"=="1"')
+    extras_pip = text.index("pip install -r requirements-extras.txt")
+    assert gate < extras_pip
+    assert text.index("pip install -r requirements.txt") < gate
+    extras = (ROOT / "requirements-extras.txt").read_text(encoding="utf-8")
+    assert "pycaw==20260927" in extras
+    assert "openwakeword==0.6.0" in extras
 
 
 def test_shipped_config_keeps_optional_feeds_off():
     from src.settings import load_settings
 
-    settings = load_settings()
+    settings = load_settings(Path(__file__).resolve().parents[1] / "config.yaml")
     assert settings.bits_enabled is False
     assert settings.channel_points_enabled is False
     assert settings.hype_train_enabled is False
     assert settings.polls_enabled is False
     assert settings.predictions_enabled is False
+    assert settings.ad_breaks_enabled is False
+    assert settings.shoutouts_enabled is False
+    assert settings.ask_queue is False
     assert settings.allow_links is False
     assert "!so" in settings.mod_commands
     assert settings.shoutout_cooldown_seconds == 120

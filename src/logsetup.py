@@ -29,7 +29,12 @@ class RedactFilter(logging.Filter):
         return True
 
 
-def setup_logging(secrets: list[str] | None = None) -> None:
+def setup_logging(
+    secrets: list[str] | None = None,
+    *,
+    level: str = "INFO",
+    debug_modules: list[str] | None = None,
+) -> None:
     log_dir = ROOT / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     redactor = RedactFilter(secrets)
@@ -47,6 +52,8 @@ def setup_logging(secrets: list[str] | None = None) -> None:
     stream.addFilter(redactor)
     root = logging.getLogger()
     root.handlers.clear()
-    root.setLevel(logging.INFO)
+    root.setLevel(getattr(logging, (level or "INFO").upper(), logging.INFO))
     root.addHandler(stream)
     root.addHandler(file_handler)
+    for name in debug_modules or []:
+        logging.getLogger(str(name)).setLevel(logging.DEBUG)

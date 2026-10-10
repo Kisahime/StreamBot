@@ -60,7 +60,24 @@ def _reward_spec(value: Any) -> RewardSpec:
     return RewardSpec("ignore")
 
 
-def _parse_profiles(raw: Any) -> dict[str, dict[str, Any]]:
+def _parse_custom_commands(raw: Any) -> dict[str, str]:
+    """Fixed chat replies. Keys are normalized to ``!name``."""
+    if not isinstance(raw, dict):
+        return {}
+    commands: dict[str, str] = {}
+    for key, value in raw.items():
+        name = str(key or "").strip().lower()
+        if not name:
+            continue
+        if not name.startswith("!"):
+            name = f"!{name}"
+        text = str(value or "").strip()
+        if text:
+            commands[name] = text
+    return commands
+
+
+def _parse_profiles(raw: Any, voices: list[str] | None = None) -> dict[str, dict[str, Any]]:
     """Named overrides for the runtime keys a profile is allowed to change."""
     if not isinstance(raw, dict):
         return {}
@@ -86,6 +103,17 @@ def _parse_profiles(raw: Any) -> dict[str, dict[str, Any]]:
             spec["post_voice_replies_to_chat"] = bool(body.get("post_voice_replies_to_chat"))
         if "max_replies_per_minute" in body:
             spec["max_replies_per_minute"] = int(body.get("max_replies_per_minute") or 0)
+        if "tts_voice" in body:
+            voice = str(body.get("tts_voice") or "").strip()
+            if voices is not None and voice not in voices:
+                raise ValueError(f"profile {name} has unknown voice: {voice}")
+            spec["tts_voice"] = voice
+        if "length_scale" in body:
+            spec["length_scale"] = float(body.get("length_scale"))
+        if "persona_file" in body:
+            persona_file = str(body.get("persona_file") or "").strip()
+            if persona_file:
+                spec["persona_file"] = persona_file
         profiles[str(name)] = spec
     return profiles
 
@@ -189,10 +217,17 @@ class Settings:
         self.min_send_gap_seconds = float(_get(data, "chat.min_send_gap_seconds", 1.2))
         self.chat_commands = _command_list(data, "chat.commands", ["!so", "!pixel", "!ask"])
         self.mod_commands = _command_list(data, "chat.mod_commands", ["!so"])
+        self.custom_commands = _parse_custom_commands(_get(data, "chat.custom_commands", {}) or {})
+        self.custom_command_cooldown_seconds = float(_get(data, "chat.custom_command_cooldown_seconds", 30))
         self.shoutout_cooldown_seconds = float(_get(data, "chat.shoutout_cooldown_seconds", 120))
+        self.shoutout_line = str(_get(data, "chat.shoutout_line", "go check out {user}") or "go check out {user}")
+        self.shoutout_speak = bool(_get(data, "chat.shoutout_speak", True))
+        self.control_command = str(_get(data, "chat.control_command", "") or "").strip()
         self.chat_max_age_seconds = float(_get(data, "chat.max_age_seconds", 45))
         self.welcome_first_time = bool(_get(data, "chat.welcome_first_time", False))
         self.control_cooldown_seconds = float(_get(data, "chat.control_cooldown_seconds", 4))
+        self.ask_queue = bool(_get(data, "chat.ask_queue", False))
+        self.clip_cooldown_seconds = float(_get(data, "chat.clip_cooldown_seconds", 60))
         self.ambient_chat_context = int(_get(data, "chat.ambient_context_lines", 6))
         self.allow_links = bool(_get(data, "safety.allow_links", False))
 
@@ -213,15 +248,22 @@ class Settings:
         self.hype_train_enabled = bool(_get(data, "events.hype_train", False))
         self.polls_enabled = bool(_get(data, "events.polls", False))
         self.predictions_enabled = bool(_get(data, "events.predictions", False))
+        self.ad_breaks_enabled = bool(_get(data, "events.ad_breaks", False))
+        self.shoutouts_enabled = bool(_get(data, "events.shoutouts", False))
+        self.idle_on_offline = bool(_get(data, "events.idle_on_offline", True))
         rewards = _get(data, "events.channel_point_rewards", {}) or {}
         self.channel_point_rewards = {
             str(key).strip().lower(): _reward_spec(value)
             for key, value in rewards.items()
             if str(key).strip()
         }
-        self.profiles = _parse_profiles(_get(data, "profiles", {}) or {})
+        self.profiles = _parse_profiles(_get(data, "profiles", {}) or {}, voices=list(self.tts_voices))
 
         self.overlay_alert_hold = float(_get(data, "overlay.alert_hold_seconds", 6))
+        self.log_level = str(_get(data, "logging.level", "INFO") or "INFO").upper()
+        self.log_debug_modules = [
+            str(name) for name in (_get(data, "logging.debug_modules", []) or []) if str(name).strip()
+        ]
 
         self.twitch_token = os.getenv("TWITCH_TOKEN", "").strip()
         self.twitch_nick = os.getenv("TWITCH_NICK", "").strip()
@@ -293,6 +335,17 @@ class Settings:
             subs.extend([("channel.poll.begin", "1"), ("channel.poll.end", "1")])
         if self.predictions_enabled:
             subs.extend([("channel.prediction.begin", "1"), ("channel.prediction.end", "1")])
+        if self.ad_breaks_enabled:
+            subs.append(("channel.ad_break.begin", "1"))
+        if self.shoutouts_enabled:
+            subs.extend(
+                [
+                    ("channel.shoutout.receive", "1"),
+                    ("channel.shoutout.create", "1"),
+                    ("channel.raid.out", "1"),
+                ]
+            )
+        subs.extend([("stream.online", "1"), ("stream.offline", "1")])
         return subs
 
 

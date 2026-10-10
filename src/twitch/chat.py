@@ -38,6 +38,7 @@ class ChatLine:
     ts: float = field(default_factory=time.monotonic)
     id: str = ""
     first_msg: bool = False
+    msg_id: str = ""
 
     def render(self) -> str:
         return f"{self.user}: {self.text}"
@@ -84,6 +85,43 @@ def looks_like_auth_failure(text: str) -> bool:
         token in low
         for token in ("login unsuccessful", "authentication", "invalid token", "oauth", "401", "403", "improperly formatted auth")
     )
+
+
+def message_id(message: Any) -> str:
+    """IRC message id from TwitchIO, or the raw ``id`` tag."""
+    raw = getattr(message, "id", None)
+    if raw:
+        return str(raw)
+    tags = getattr(message, "tags", None)
+    if isinstance(tags, dict):
+        return str(tags.get("id") or "")
+    return ""
+
+
+_PARENT_RE = re.compile(r"[^A-Za-z0-9\-]")
+
+
+def safe_reply_parent(parent: str) -> str:
+    return _PARENT_RE.sub("", parent or "")[:100]
+
+
+def format_reply_privmsg(channel: str, parent_id: str, text: str) -> str:
+    """TwitchIO 2.x reply: a tagged PRIVMSG. Empty parent ids are the caller's job."""
+    name = (channel or "").lstrip("#").strip()
+    parent = safe_reply_parent(parent_id)
+    body = (text or "").replace("\r", " ").replace("\n", " ").strip()
+    return f"@reply-parent-msg-id={parent} PRIVMSG #{name} :{body}"
+
+
+def _irc_socket(bot: Any):
+    for attr in ("_ws", "_websocket", "websocket"):
+        socket = getattr(bot, attr, None)
+        if socket is not None and callable(getattr(socket, "send", None)):
+            return socket
+    connection = getattr(bot, "_connection", None)
+    if connection is not None and callable(getattr(connection, "send", None)):
+        return connection
+    return None
 
 
 def message_is_first(message: Any) -> bool:
@@ -158,7 +196,7 @@ class TwitchChat:
         self._connect_error: str | None = None
         self.connected = False
         self.auth_failed = False
-        self._out: asyncio.Queue[str] = asyncio.Queue()
+        self._out: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
         self._sender: asyncio.Task | None = None
 
     def set_allow_from(self, names: list[str]) -> None:
@@ -224,6 +262,7 @@ class TwitchChat:
                     is_mod=is_mod,
                     is_broadcaster=is_broadcaster,
                     first_msg=message_is_first(message),
+                    msg_id=message_id(message),
                 )
                 parent.buffer.append(line)
                 await parent.on_line(line)
@@ -271,22 +310,23 @@ class TwitchChat:
             self._sender = None
         await self.on_status("disconnected")
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str, reply_parent: str = "") -> None:
         text = (text or "").strip()
         if not text:
             return
-        await self._out.put(text[:500])
+        await self._out.put((text[:500], safe_reply_parent(reply_parent)))
 
     async def _send_loop(self) -> None:
         while True:
-            text = await self._out.get()
+            item = await self._out.get()
+            text, parent = item if isinstance(item, tuple) else (str(item), "")
             try:
-                await self._send_now(text)
+                await self._send_now(text, parent)
             except Exception:
                 log.exception("chat send failed")
             await asyncio.sleep(self.min_send_gap)
 
-    async def _send_now(self, text: str) -> None:
+    async def _send_now(self, text: str, reply_parent: str = "") -> None:
         if not self._bot or not text.strip():
             return
         channel = self._bot.get_channel(self.channel)
@@ -298,7 +338,15 @@ class TwitchChat:
         if channel is None:
             log.warning("Twitch channel object missing; cannot send")
             return
-        await channel.send(text.strip()[:500])
+        body = text.strip()[:500]
+        parent = safe_reply_parent(reply_parent)
+        if parent:
+            raw = format_reply_privmsg(getattr(channel, "name", None) or self.channel, parent, body)
+            socket = _irc_socket(self._bot)
+            if socket is not None:
+                await socket.send(raw)
+                return
+        await channel.send(body)
 
     def recent(self, n: int) -> list[ChatLine]:
         items = list(self.buffer)

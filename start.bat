@@ -3,7 +3,14 @@ setlocal
 cd /d "%~dp0"
 
 set NOBROWSER=0
+set EXTRAS=0
+:parse_args
+if "%~1"=="" goto args_done
 if /I "%~1"=="--no-browser" set NOBROWSER=1
+if /I "%~1"=="--extras" set EXTRAS=1
+shift
+goto parse_args
+:args_done
 
 set "PY="
 py -3.11 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>nul
@@ -45,6 +52,25 @@ if errorlevel 1 (
     echo Could not record the install stamp. The next launch will retry pip.
     pause
     exit /b 1
+  )
+)
+
+if "%EXTRAS%"=="1" (
+  .venv\Scripts\python.exe -c "import hashlib,pathlib,sys; p=pathlib.Path('requirements-extras.txt'); h=hashlib.sha256(p.read_bytes()).hexdigest(); s=pathlib.Path(r'.venv\requirements-extras.stamp'); sys.exit(0 if s.exists() and s.read_text(encoding='utf-8').strip()==h else 1)"
+  if errorlevel 1 (
+    echo Installing optional extras...
+    .venv\Scripts\python.exe -m pip install -r requirements-extras.txt
+    if errorlevel 1 (
+      echo pip install of extras failed. Fix the error above and run start.bat --extras again.
+      pause
+      exit /b 1
+    )
+    .venv\Scripts\python.exe -c "import hashlib,pathlib; p=pathlib.Path('requirements-extras.txt'); pathlib.Path(r'.venv\requirements-extras.stamp').write_text(hashlib.sha256(p.read_bytes()).hexdigest(), encoding='utf-8')"
+    if errorlevel 1 (
+      echo Could not record the extras install stamp. The next launch with --extras will retry pip.
+      pause
+      exit /b 1
+    )
   )
 )
 

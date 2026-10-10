@@ -35,10 +35,19 @@ def test_event_scenes_and_outgoing_raid():
     assert "gifted 5" in StreamEvent(kind="gift", user="A", extra={"total": 5}).scene()
     outgoing = _parse_notification(
         "channel.raid",
-        {"from_broadcaster_user_login": "mychan", "from_broadcaster_user_name": "Me", "viewers": 3},
+        {
+            "from_broadcaster_user_login": "mychan",
+            "from_broadcaster_user_name": "Me",
+            "to_broadcaster_user_name": "Other",
+            "to_broadcaster_user_login": "other",
+            "viewers": 3,
+        },
         channel="mychan",
     )
-    assert outgoing is None
+    assert outgoing is not None
+    assert outgoing.kind == "raid_out"
+    assert outgoing.user == "Other"
+    assert "Other" in outgoing.scene()
     incoming = _parse_notification(
         "channel.raid",
         {"from_broadcaster_user_login": "nova", "from_broadcaster_user_name": "Nova", "viewers": 9},

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import subprocess
 import sys
 import time
@@ -119,7 +120,11 @@ async def snapshot(settings: Settings, orch) -> dict[str, Any]:
             "snappy": "Whisper CUDA + qwen2.5:3b",
             "quality": "Whisper CPU + qwen2.5:7b-instruct-q4_K_M",
         },
+        "extras": extra_status(),
         "timings": getattr(orch, "timings", {}),
+        "timings_p50": _timing_percentile(orch, 50),
+        "timings_p95": _timing_percentile(orch, 95),
+        "timing_warning": _timing_warning(orch),
         "duck": orch.duck.status() if getattr(orch, "duck", None) else {"mode": "off", "note": ""},
         "wake": orch.mic.wake.status() if getattr(orch, "mic", None) else {"enabled": False},
         "mood": getattr(orch, "mood", "normal"),
@@ -149,6 +154,42 @@ async def snapshot(settings: Settings, orch) -> dict[str, Any]:
             "max_replies_per_minute": settings.max_replies_per_minute,
         },
     }
+
+
+def extra_status() -> dict[str, str]:
+    """Whether the optional Windows extras are importable."""
+    status: dict[str, str] = {}
+    for name in ("pycaw", "openwakeword"):
+        status[name] = "installed" if importlib.util.find_spec(name) is not None else "not installed"
+    return status
+
+
+def _percentile(values: list[int], pct: float) -> int:
+    ordered = sorted(int(item) for item in values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (pct / 100.0) * (len(ordered) - 1)
+    lo = int(rank)
+    hi = min(lo + 1, len(ordered) - 1)
+    frac = rank - lo
+    return int(round(ordered[lo] * (1 - frac) + ordered[hi] * frac))
+
+
+def _timing_percentile(orch, pct: float) -> dict[str, int]:
+    samples = getattr(orch, "timing_samples", {}) or {}
+    stats: dict[str, int] = {}
+    for key, bucket in samples.items():
+        rows = list(bucket)
+        if rows:
+            stats[str(key)] = _percentile(rows, pct)
+    return stats
+
+
+def _timing_warning(orch) -> str:
+    audio = _timing_percentile(orch, 95).get("first_audio_ms")
+    if audio is not None and audio > 2500:
+        return "First-audio p95 is over 2.5 s."
+    return ""
 
 
 def _twitch_feeds(orch) -> dict[str, str]:

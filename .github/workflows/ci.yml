@@ -32,4 +32,4 @@ jobs:
         run: python -m ruff check src tests
 
       - name: Test
-        run: python -m pytest -q
+        run: python -m pytest -q --cov=src --cov-fail-under=72

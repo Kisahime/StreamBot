@@ -1,4 +1,5 @@
 server:
+  # server.host stays on localhost. IPv6 loopback is ::1; the booth also accepts Host: [::1]:port.
   host: 127.0.0.1
   port: 8080
   # The booth has no auth. Stay on localhost unless you set this true on purpose.
@@ -67,7 +68,8 @@ audio:
   barge_in: true
   echo_gate: true
   echo_gate_ratio: 2.5
-  # Local wake word via openwakeword. Off by default, and never the only way to talk.
+  # audio.wake_word uses openwakeword and never replaces hold-to-talk.
+  # audio.wake_models names the models. audio.wake_threshold is 0 to 1; raise it when a phrase false-triggers.
   wake_word: false
   wake_models:
     - hey_jarvis
@@ -93,12 +95,28 @@ chat:
   mod_commands:
     - "!so"
   shoutout_cooldown_seconds: 120
+  # Posted for !so. {user} is the login. A shoutout of the last raider still says "welcome in".
+  shoutout_line: "go check out {user}"
+  shoutout_speak: true
+  # Empty derives !<persona name>. !pixel always stays as an alias.
+  control_command: ""
   # Pending viewer lines older than this are dropped (streamer lines and commands stay).
   max_age_seconds: 45
   # First-time chatters get a short typed welcome instead of a spoken reply.
   welcome_first_time: true
   # Gap between mod !pixel mute/unmute/chill/hype/stop commands.
   control_cooldown_seconds: 4
+  # When true, !ask waits in the Questions list instead of being answered immediately.
+  ask_queue: false
+  # Gap between mod !pixel clip commands.
+  clip_cooldown_seconds: 60
+  # Fixed text replies. {user} is the chatter. No model and no shoutout.
+  # Each command has its own timer of custom_command_cooldown_seconds.
+  # custom_commands:
+  #   "!lurk": "enjoy the lurk {user}"
+  #   "!discord": "discord is linked in the panels"
+  custom_commands: {}
+  custom_command_cooldown_seconds: 30
 
 memory:
   chat_context_lines: 20
@@ -120,6 +138,10 @@ events:
   hype_train: false
   polls: false
   predictions: false
+  ad_breaks: false
+  shoutouts: false
+  # On stream.offline, stop the mic and mark the booth idle.
+  idle_on_offline: true
   channel_point_rewards:
     hydrate: speak
     # A reward can also be a mapping. {user} and {input} are filled in, and input is fenced.
@@ -131,11 +153,17 @@ events:
 overlay:
   alert_hold_seconds: 6
 
+logging:
+  level: INFO
+  # Logger names that stay at DEBUG, for example ["cohost.mic", "cohost.tts"].
+  debug_modules: []
+
 safety:
   # Pixel strips links from chat posts unless this is true.
   allow_links: false
 
 # Named booth presets. POST /api/profile applies one and stores the name in data/booth.json.
+# A profile may also set tts_voice (one of tts.voices), length_scale, and persona_file.
 profiles:
   "Just chatting":
     mood: hype

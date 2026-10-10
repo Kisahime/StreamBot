@@ -143,49 +143,49 @@ Do these on a test stream or with the booth open before relying on the features.
 
 ### Phase 2: Robustness and code health
 
-- [ ] **V3-P2-01 🟡 Atomic writes for booth and identity** (F-08)
+- [x] **V3-P2-01 🟡 Atomic writes for booth and identity** (F-08)
   - *Do:* use `atomic_write_text()` in `save_booth()` and `save_identity()`; log (don't swallow silently) a corrupt file and keep a `.bad` copy like memory does.
   - *Files:* `src/booth.py`, `src/identity.py`, tests
   - *Acceptance:* a test that makes `os.replace` raise leaves the old file intact; a corrupt `booth.json` is logged and copied to `booth.json.bad`.
   - *Depends on:* none
 
-- [ ] **V3-P2-02 🟡 Clean up Piper temp files after interrupts** (F-10)
+- [x] **V3-P2-02 🟡 Clean up Piper temp files after interrupts** (F-10)
   - *Do:* when a persistent request is abandoned, record its `out_path` in a "pending deletes" set; delete it when its ready-line arrives or on the next synth/close. Optionally write temps into `data/tmp/` and clear that folder on start.
   - *Files:* `src/tts/piper.py`, `tests/test_piper_pipes.py`
   - *Acceptance:* a fake Piper that writes the file after the interrupt leaves no stray WAVs after the next synth.
   - *Depends on:* none
 
-- [ ] **V3-P2-03 🟡 Keep the manual mood across restarts** (F-11)
+- [x] **V3-P2-03 🟡 Keep the manual mood across restarts** (F-11)
   - *Do:* store `mood_override` separately in `BoothState`; profiles set the base mood, and a manual change sets the override until the next profile switch.
   - *Files:* `src/booth.py`, `src/orchestrator.py`, `tests/test_phase4.py`
   - *Acceptance:* profile "Focus game" + manual `hype` → restart → mood is still `hype`; switching profile clears the override.
   - *Depends on:* V3-P2-01
 
-- [ ] **V3-P2-04 🟡 Better shoutout lines** (F-12)
+- [x] **V3-P2-04 🟡 Better shoutout lines** (F-12)
   - *Do:* say "go check out X" style lines (configurable `chat.shoutout_line`, with `{user}`), use "welcome in" only when the target is the last raider, and let `chat.shoutout_speak` (default true) control TTS.
   - *Files:* `src/orchestrator.py`, `src/settings.py`, `config.yaml`, `tests/test_shoutout.py`
   - *Acceptance:* `!so friend` with no raid posts the configured line; a raider shoutout keeps the welcome; with `shoutout_speak: false` nothing is spoken.
   - *Depends on:* V3-P1-02
 
-- [ ] **V3-P2-05 🟡 Remove hardcoded "Pixel"** (F-13)
+- [x] **V3-P2-05 🟡 Remove hardcoded "Pixel"** (F-13)
   - *Do:* derive the control command from the persona name (`!<name lowercase>`) and keep `!pixel` as an alias via `chat.control_command`; use `personaName` in the dashboard hint; pass the persona name into the smalltalk fallback everywhere.
   - *Files:* `src/policy.py`, `src/orchestrator.py`, `src/settings.py`, `src/web/static/app.js`, `config.yaml`, tests
   - *Acceptance:* with `name: Nova` and `control_command` unset, `!nova mute` works and `!pixel mute` still works; no user-visible "Pixel" remains in the UI when the persona is renamed.
   - *Depends on:* none
 
-- [ ] **V3-P2-06 🟡 Split the orchestrator** (F-15)
+- [x] **V3-P2-06 🟡 Split the orchestrator** (F-15)
   - *Do:* move code without changing behaviour into `src/core/chat_flow.py` (pick/rate/decide/perform), `src/core/event_flow.py` (batching, priority, react), `src/core/voice_flow.py` (utterance → reply), `src/core/twitch_link.py` (connect/disconnect/watchdog) and `src/core/queue.py`. Keep `Orchestrator` as a thin façade so `main.py` and tests don't change.
   - *Files:* `src/orchestrator.py`, new `src/core/*`
   - *Acceptance:* all existing tests pass unchanged; `orchestrator.py` is under 500 lines; ruff clean.
   - *Depends on:* Phase 1 done (to avoid merge pain)
 
-- [ ] **V3-P2-07 🟡 Hermetic tests and a coverage floor** (F-16)
+- [x] **V3-P2-07 🟡 Hermetic tests and a coverage floor** (F-16)
   - *Do:* make `conftest.py` set `COHOST_SKIP_SECRET_CHECK=1`, point `ROOT`-based paths at `tmp_path` via a fixture, and never read the real `config.yaml`/`persona.yaml`. Add `--cov=src --cov-fail-under=<current-2>` to CI.
   - *Files:* `tests/conftest.py`, `.github/workflows/ci.yml`, `pyproject.toml`
   - *Acceptance:* tests pass with a deliberately broken `config.yaml` in the repo root; CI fails if coverage drops.
   - *Depends on:* V3-P1-01
 
-- [ ] **V3-P2-08 🟡 Configurable logging** (F-17)
+- [x] **V3-P2-08 🟡 Configurable logging** (F-17)
   - *Do:* add `logging.level` (default INFO) and `logging.debug_modules` (e.g. `["cohost.mic","cohost.tts"]`), and a dashboard "Debug log for 10 min" toggle (token-protected POST).
   - *Files:* `src/logsetup.py`, `src/settings.py`, `config.yaml`, `src/main.py`, `src/web/static/*`
   - *Acceptance:* setting `debug_modules: [cohost.mic]` produces mic debug lines only; the toggle reverts after 10 minutes.
@@ -193,56 +193,56 @@ Do these on a test stream or with the booth open before relying on the features.
 
 ### Phase 3: Stream-day features (💡 suggestions grounded in existing code)
 
-- [ ] **V3-P3-01 💡 Hype-train meter on the overlay and dashboard** (F-14)
+- [x] **V3-P3-01 💡 Hype-train meter on the overlay and dashboard** (F-14)
   - *Why:* `hype_progress` events and `hype_level` status already exist; the v2 payload also carries `progress`, `goal`, `expires_at`.
   - *Do:* extend `_hype_extra()` to keep `progress`, `goal`, `total`, `expires_at`; broadcast a `hype` message; overlay draws a bar with level and countdown (`?hype=0` hides it); dashboard shows the same in the Twitch panel.
   - *Files:* `src/twitch/eventsub.py`, `src/orchestrator.py`, `src/web/static/overlay.*`, `src/web/static/app.js`, tests
   - *Acceptance:* a fake progress event updates the bar; an end event hides it after `overlay.alert_hold_seconds`.
   - *Depends on:* owner check V3-P0-02 (hype train scope)
 
-- [ ] **V3-P3-02 💡 Stream online/offline awareness with automatic recap**
+- [x] **V3-P3-02 💡 Stream online/offline awareness with automatic recap**
   - *Why:* EventSub `stream.online` / `stream.offline` need no scope; the recap builder already exists.
   - *Do:* subscribe to both (core, no scope); on online start a new memory "session" (rotate `session_id`, stamp `session_started`); on offline auto-write the recap (`data/recaps/YYYY-MM-DD-HHMM.md`), and optionally set the booth to idle. Scope recap content to the session (fixes F-09).
   - *Files:* `src/settings.py`, `src/twitch/auth.py`, `src/twitch/eventsub.py`, `src/orchestrator.py`, `src/recap.py`, `src/memory.py`, tests
   - *Acceptance:* fake online→events→offline writes one recap file with only that session's items, including cheers/redeems/polls; two sessions on one day make two files.
   - *Depends on:* none
 
-- [ ] **V3-P3-03 💡 Ad-break heads-up**
+- [x] **V3-P3-03 💡 Ad-break heads-up**
   - *Why:* `channel.ad_break.begin` (scope `channel:read:ads`) fits the existing feed/scope system.
   - *Do:* new optional feed `events.ad_breaks`; Pixel types (not speaks, by default) a short "ad break, back in N seconds" line and the overlay shows a countdown.
   - *Files:* `src/settings.py`, `src/twitch/auth.py`, `src/twitch/eventsub.py`, `src/orchestrator.py`, overlay, `config.yaml`, tests
   - *Acceptance:* a fake event produces one line and a countdown; missing scope shows `missing scope channel:read:ads` in the feed list.
   - *Depends on:* V3-P1-06
 
-- [ ] **V3-P3-04 💡 Real Twitch reply threads**
+- [x] **V3-P3-04 💡 Real Twitch reply threads**
   - *Why:* `ChatLine.id` exists, but replies are plain `@name` messages. Threaded replies look cleaner in chat.
   - *Do:* capture the IRC `id` tag in `event_message`; when sending a viewer reply, send it as a reply (TwitchIO 2.x: raw PRIVMSG with `@reply-parent-msg-id=…`, or Helix *Send Chat Message* with `reply_parent_message_id`, which needs `user:write:chat`). Fall back to the current `@name` line.
   - *Files:* `src/twitch/chat.py`, `src/orchestrator.py`, tests
   - *Acceptance:* a fake bot records a reply-parent id on viewer replies; streamer replies and alerts stay unthreaded.
   - *Depends on:* none
 
-- [ ] **V3-P3-05 💡 Clip button next to "Remember this"**
+- [x] **V3-P3-05 💡 Clip button next to "Remember this"**
   - *Why:* Helix *Create Clip* (scope `clips:edit`) pairs with the existing marker flow.
   - *Do:* `POST /api/clip` creates a clip, stores the edit URL as a streamer note, and shows it in the log; add a `!pixel clip` mod verb (cooldown 60 s).
   - *Files:* `src/twitch/helix.py`, `src/orchestrator.py`, `src/main.py`, `src/policy.py`, dashboard, tests
   - *Acceptance:* fake Helix returns an id and the note is saved; a missing scope gives a clear message; the mod verb respects its cooldown.
   - *Depends on:* V3-P1-06
 
-- [ ] **V3-P3-06 💡 `!ask` question queue**
+- [x] **V3-P3-06 💡 `!ask` question queue**
   - *Why:* `!ask` is already allowlisted and the queue panel exists.
   - *Do:* `!ask …` lines go into a separate "Questions" list (not auto-answered when `chat.ask_queue: true`); the dashboard shows them with **Answer** (spoken) / **Drop**; overlay can optionally show the current question.
   - *Files:* `src/orchestrator.py`, `src/settings.py`, `src/main.py`, `src/web/static/*`, tests
   - *Acceptance:* three `!ask` lines appear in order; **Answer** speaks a reply to that viewer; stale filtering doesn't drop them.
   - *Depends on:* V3-P2-06 (optional, easier after the split)
 
-- [ ] **V3-P3-07 💡 Viewer notes you can edit**
+- [x] **V3-P3-07 💡 Viewer notes you can edit**
   - *Why:* notes are auto-captured by regex (`NOTE_RE`) and shown read-only; they drive "private bookmarks" in prompts.
   - *Do:* add `POST /api/memory/note` (add/remove) and an editable notes list in the People panel; add a "pin" flag that survives retention pruning.
   - *Files:* `src/memory.py`, `src/main.py`, `src/web/static/app.js`, tests
   - *Acceptance:* adding a note shows up in the prompt block for that viewer; a pinned viewer survives `prune()`.
   - *Depends on:* none
 
-- [ ] **V3-P3-08 💡 Shoutout-received and raid-out lines**
+- [x] **V3-P3-08 💡 Shoutout-received and raid-out lines**
   - *Why:* EventSub `channel.shoutout.receive` / `channel.shoutout.create` (scope `moderator:read:shoutouts`) and outgoing raids (`channel.raid` with `from_broadcaster_user_id`) slot into the existing parser (outgoing raids are currently dropped at `eventsub.py:650`).
   - *Do:* optional feed `events.shoutouts`; Pixel thanks the channel that shouted you out; on an outgoing raid, Pixel says a goodbye line.
   - *Files:* `src/settings.py`, `src/twitch/auth.py`, `src/twitch/eventsub.py`, `src/orchestrator.py`, tests
@@ -251,33 +251,33 @@ Do these on a test stream or with the booth open before relying on the features.
 
 ### Phase 4: Booth quality-of-life (💡 suggestions)
 
-- [ ] **V3-P4-01 💡 Stream Deck / hotkey friendly API**
+- [x] **V3-P4-01 💡 Stream Deck / hotkey friendly API**
   - *Why:* every booth action is already an endpoint, but the per-launch token makes external buttons impossible.
   - *Do:* optional `COHOST_CONTROL_KEY` in `.env`; when set, `BoothGuard` also accepts it in `X-Cohost-Token` for a small allow-list (`/api/interrupt`, `/api/tts/mute`, `/api/ptt`, `/api/marker`, `/api/mood`, `/api/profile`). Document curl/Stream Deck "Website/API" examples.
   - *Files:* `src/security.py`, `src/main.py`, `.env.example`, `README.md`, `tests/test_api.py`
   - *Acceptance:* with the key set, `/api/interrupt` works with it and `/api/persona` still rejects it; without the key nothing changes.
   - *Depends on:* V3-P1-01
 
-- [ ] **V3-P4-02 💡 Voice and persona per profile**
+- [x] **V3-P4-02 💡 Voice and persona per profile**
   - *Do:* allow `tts_voice`, `length_scale` and an optional `persona_file` in a profile; switching profile swaps them (voice download progress shown as now).
   - *Files:* `src/settings.py`, `src/orchestrator.py`, `config.yaml`, tests
   - *Acceptance:* switching to a profile with `tts_voice: en_US-kristin-medium` changes `health.voice`; invalid voices are rejected at load time.
   - *Depends on:* V3-P2-03
 
-- [ ] **V3-P4-03 💡 Session transcript export**
+- [x] **V3-P4-03 💡 Session transcript export**
   - *Do:* append every transcript/chat/alert line to `data/sessions/<session>.jsonl` (rotated, honours retention and Forget); dashboard "Download transcript" button.
   - *Files:* `src/orchestrator.py`, `src/memory.py`, `src/main.py`, dashboard, tests
   - *Acceptance:* a session produces a JSONL file; **Forget** removes that viewer's lines from it.
   - *Depends on:* V3-P3-02
 
-- [ ] **V3-P4-04 💡 Simple custom text commands**
+- [x] **V3-P4-04 💡 Simple custom text commands**
   - *Why:* fixes the "commands that aren't !so" gap from V3-P1-02 in a useful way.
   - *Do:* `chat.custom_commands: {"!lurk": "enjoy the lurk {user}", "!discord": "…"}` posts fixed text (no model) with per-command cooldown; commands are added to the allowlist automatically.
   - *Files:* `src/settings.py`, `src/orchestrator.py`, `src/policy.py`, `config.yaml`, tests
   - *Acceptance:* `!lurk` posts the filled text once per cooldown; it never triggers a shoutout or a model call.
   - *Depends on:* V3-P1-02
 
-- [ ] **V3-P4-05 💡 Latency panel with history**
+- [x] **V3-P4-05 💡 Latency panel with history**
   - *Why:* `timings` already captures STT, first token, first audio and chat send for the last reply only.
   - *Do:* keep a rolling 50-sample window and show p50/p95 per stage on the dashboard; warn when first-audio p95 > 2.5 s with a link to the VRAM tips.
   - *Files:* `src/orchestrator.py`, `src/health.py`, `src/web/static/app.js`, tests
@@ -286,19 +286,19 @@ Do these on a test stream or with the booth open before relying on the features.
 
 ### Phase 5: Docs and packaging
 
-- [ ] **V3-P5-01 🟡 README refresh**
+- [x] **V3-P5-01 🟡 README refresh**
   - *Do:* document duck app lists (V3-P1-07), wake-word tuning, the action scopes list, IPv6 note, recap/session behaviour, custom commands, the control key, and the owner checklist. Fix "endpoint ducking" and "`!so` shouts out the last raider" (it also takes a name).
   - *Files:* `README.md`, `config.yaml` comments
   - *Acceptance:* every config key in `settings.py` is mentioned in README or `config.yaml` comments (add a test that greps for them).
   - *Depends on:* the features you chose
 
-- [ ] **V3-P5-02 🟡 Optional extras file**
+- [x] **V3-P5-02 🟡 Optional extras file**
   - *Do:* add `requirements-extras.txt` with pinned `pycaw` and `openwakeword`; `start.bat --extras` installs it. Health shows "installed / not installed" for each extra.
   - *Files:* `requirements-extras.txt`, `start.bat`, `src/health.py`, `README.md`, `tests/test_start_bat.py`
   - *Acceptance:* `start.bat --extras` installs both; without the flag nothing extra is installed.
   - *Depends on:* none
 
-- [ ] **V3-P5-03 🟡 Release tag and changelog**
+- [x] **V3-P5-03 🟡 Release tag and changelog**
   - *Do:* add `CHANGELOG.md` (v0.1 = PLAN-v2 work, v0.2 = this plan), bump `pyproject.toml` version, tag `v0.2.0` after Phase 1–2 merge (owner pushes the tag).
   - *Files:* `CHANGELOG.md`, `pyproject.toml`
   - *Acceptance:* changelog lists each merged PR; version matches the tag.

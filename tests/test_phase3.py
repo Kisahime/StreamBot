@@ -720,7 +720,7 @@ def test_nova_persona_has_no_pixel_in_output_or_fallback(tmp_path, settings):
         )
         orch.twitch = type("C", (), {"connected": True, "sent": [], "send": None, "recent": lambda self, n: []})()
 
-        async def send(text):
+        async def send(text, reply_parent=""):
             orch.twitch.sent.append(text)
 
         orch.twitch.send = send

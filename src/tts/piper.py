@@ -141,6 +141,7 @@ class PiperTTS:
         self._persistent_timeout = 25.0
         self._stdout_q: queue.Queue[str] = queue.Queue()
         self._reader_gen = 0
+        self._pending_deletes: set[str] = set()
         self.on_progress = None
 
     @property
@@ -209,6 +210,7 @@ class PiperTTS:
             pass
 
     def close(self) -> None:
+        self._sweep_pending()
         proc = self._proc
         self._proc = None
         if proc is None:
@@ -309,6 +311,43 @@ class PiperTTS:
             log.info("Retrying persistent Piper")
             self._json_input = True
 
+    def _delete_output(self, out_path: str) -> None:
+        try:
+            os.unlink(out_path)
+        except OSError:
+            return
+        self._pending_deletes.discard(out_path)
+
+    def _abandon_output(self, out_path: str) -> None:
+        """Remember a wav the interrupted request may still write.
+
+        The placeholder file is removed now, but the path stays pending: Piper
+        can create it again after the interrupt, and the next synth or the
+        ready line deletes that copy.
+        """
+        if not out_path:
+            return
+        self._pending_deletes.add(out_path)
+        try:
+            os.unlink(out_path)
+        except OSError:
+            pass
+
+    def _sweep_pending(self) -> None:
+        for path in list(self._pending_deletes):
+            if os.path.exists(path):
+                self._delete_output(path)
+
+    def _claim_ready_line(self, line: str) -> None:
+        for path in list(self._pending_deletes):
+            if not self._output_ready(line, path):
+                continue
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            self._pending_deletes.discard(path)
+
     def _output_ready(self, line: str, out_path: str) -> bool:
         text = (line or "").strip()
         if not text:
@@ -363,6 +402,7 @@ class PiperTTS:
             self._proc = self._spawn()
             if self._proc is not None:
                 self._start_readers(self._proc)
+        self._sweep_pending()
         proc = self._proc
         if proc is None or proc.stdin is None:
             self._fail_persistent(proc, "Piper json-input did not start")
@@ -376,31 +416,23 @@ class PiperTTS:
         except Exception as e:
             log.warning("Piper stdin failed (%s); falling back to one-shot", e)
             self._fail_persistent(proc, "Piper stdin failed")
-            try:
-                os.unlink(out_path)
-            except OSError:
-                pass
+            self._abandon_output(out_path)
             return None
         deadline = time.monotonic() + self._persistent_timeout
         while time.monotonic() < deadline:
             if gen != self._gen:
-                try:
-                    os.unlink(out_path)
-                except OSError:
-                    pass
+                self._abandon_output(out_path)
                 return np.zeros(0, dtype=np.float32), self.sample_rate
             if proc.poll() is not None:
                 self._proc = None
                 self._fail_persistent(None, f"Piper json-input exited ({proc.returncode})")
-                try:
-                    os.unlink(out_path)
-                except OSError:
-                    pass
+                self._abandon_output(out_path)
                 return None
             try:
                 line = self._stdout_q.get(timeout=0.05)
             except queue.Empty:
                 continue
+            self._claim_ready_line(line)
             if not self._output_ready(line, out_path):
                 continue
             try:
@@ -411,10 +443,7 @@ class PiperTTS:
                 except OSError:
                     pass
         self._fail_persistent(proc, "Piper json-input timed out")
-        try:
-            os.unlink(out_path)
-        except OSError:
-            pass
+        self._abandon_output(out_path)
         return None
 
     def _synth_oneshot(self, text: str) -> tuple[np.ndarray, int]:
