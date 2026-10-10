@@ -103,6 +103,9 @@ button.held { background: #3a2218; border-color: #ffb38a; }
   max-height: 220px;
   overflow: auto;
 }
+.person-row { display: flex; gap: 6px; align-items: stretch; }
+.person-row .person { flex: 1; }
+button.forget { flex: none; padding: 8px 10px; font-size: 12px; }
 .person {
   text-align: left;
   border: 1px solid var(--line);

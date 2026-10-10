@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 import logging
 import re
+import secrets
 import shutil
 import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+from src.safety import fence_viewer_text
 
 log = logging.getLogger("cohost.memory")
 
@@ -266,6 +269,7 @@ class Viewer:
     notes: list[str] = field(default_factory=list)
     is_streamer: bool = False
     greeted: bool = False
+    greeted_session: str = ""
 
 
 STREAMER_THREAD = "streamer"
@@ -279,11 +283,15 @@ class ConversationMemory:
         event_limit: int = 80,
         viewer_limit: int = 40,
         thread_turns: int = 12,
+        retention_days: int = 14,
+        session_id: str | None = None,
     ) -> None:
         self.path = path
         self.event_limit = event_limit
         self.viewer_limit = viewer_limit
         self.thread_turns = thread_turns
+        self.retention_days = retention_days
+        self.session_id = session_id or secrets.token_hex(8)
         self.events: deque[Event] = deque(maxlen=event_limit)
         self.viewers: dict[str, Viewer] = {}
         self.threads: dict[str, deque[Turn]] = {}
@@ -304,6 +312,8 @@ class ConversationMemory:
             self._preserve_bad()
             return
         self._ingest(data)
+        if self.prune():
+            self.flush()
 
     def _preserve_bad(self) -> None:
         bad = self.path.with_suffix(".json.bad")
@@ -483,17 +493,61 @@ class ConversationMemory:
         viewer.last_ts = time.time()
         low = (reply or "").lower()
         if any(g in low for g in ("hey", "hi ", "hello", "welcome", "heyyy")):
-            viewer.greeted = True
+            self._mark_greeted_viewer(viewer)
         self.viewers[key] = viewer
         self.save()
+
+    def is_greeted(self, viewer: Viewer | None) -> bool:
+        if viewer is None:
+            return False
+        return bool(viewer.greeted_session) and viewer.greeted_session == self.session_id
+
+    def _mark_greeted_viewer(self, viewer: Viewer) -> None:
+        viewer.greeted = True
+        viewer.greeted_session = self.session_id
 
     def mark_greeted(self, user: str) -> None:
         key = (user or "").lower()
         viewer = self.viewers.get(key)
         if not viewer:
             return
-        viewer.greeted = True
+        self._mark_greeted_viewer(viewer)
         self.save()
+
+    def forget(self, login: str) -> None:
+        key = (login or "").strip().lower()
+        if not key or key == STREAMER_THREAD:
+            return
+        self.viewers.pop(key, None)
+        self.threads.pop(self.viewer_thread_key(key), None)
+        self.events = deque(
+            (event for event in self.events if (event.user or "").lower() != key),
+            maxlen=self.event_limit,
+        )
+        self.save()
+
+    def prune(self, now: float | None = None) -> int:
+        if self.retention_days <= 0:
+            return 0
+        cutoff = (now if now is not None else time.time()) - self.retention_days * 86400
+        removed = 0
+        kept_events = [event for event in self.events if event.ts >= cutoff]
+        removed += len(self.events) - len(kept_events)
+        self.events = deque(kept_events, maxlen=self.event_limit)
+        for key in list(self.threads):
+            kept = [turn for turn in self.threads[key] if turn.ts >= cutoff]
+            removed += len(self.threads[key]) - len(kept)
+            if kept:
+                self.threads[key] = deque(kept, maxlen=self.thread_turns)
+            else:
+                self.threads.pop(key, None)
+        for key, viewer in list(self.viewers.items()):
+            if viewer.last_ts and viewer.last_ts < cutoff:
+                self.viewers.pop(key, None)
+                removed += 1
+        if removed:
+            self.save()
+        return removed
 
     def viewer(self, name: str) -> Viewer | None:
         if (name or "").lower() in ("streamer", STREAMER_THREAD):
@@ -541,7 +595,7 @@ class ConversationMemory:
                 + "; ".join(focus_viewer.notes[-NOTE_CAP:])
             )
         if focus != STREAMER_THREAD and focus_viewer:
-            if focus_viewer.greeted:
+            if self.is_greeted(focus_viewer):
                 extra.append("You already greeted them this session. Do not greet again.")
             elif focus_viewer.messages <= 1:
                 extra.append("First time you've talked to them.")
@@ -554,7 +608,8 @@ class ConversationMemory:
             if focus != STREAMER_THREAD and v.name.lower() == focus.split(":")[-1]:
                 continue
             snippet = (v.last_said or "")[:80]
-            roster_bits.append(f"{v.name}: “{snippet}”" if snippet else v.name)
+            shown = fence_viewer_text(snippet, limit=80) if snippet else ""
+            roster_bits.append(f"{v.name}: {shown}" if shown else v.name)
         roster = (
             ("Other people in chat (not this conversation): " + "; ".join(roster_bits))
             if roster_bits
@@ -606,7 +661,7 @@ class ConversationMemory:
             "messages": v.messages,
             "last_said": v.last_said,
             "last_reply": v.last_reply,
-            "greeted": v.greeted,
+            "greeted": self.is_greeted(v),
             "notes": list(v.notes),
             "thread": turns,
         }

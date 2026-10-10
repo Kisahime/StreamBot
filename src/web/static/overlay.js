@@ -1,3 +1,4 @@
+// Read-only OBS page. It listens on the WebSocket and never sends the booth control token.
 const phaseEl = document.getElementById("phase");
 const lineEl = document.getElementById("line");
 const nameEl = document.getElementById("name");
