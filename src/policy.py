@@ -53,6 +53,21 @@ def chat_action(line: ChatLine, *, welcome_first_time: bool = False) -> str:
     return "chat"
 
 
+def custom_reply(line: ChatLine, commands: dict[str, str] | None) -> str:
+    """Filled fixed-text reply for a custom command, or empty when this line is not one."""
+    table = commands or {}
+    cmd = (line.command or "").lower()
+    if not cmd:
+        return ""
+    template = table.get(cmd)
+    if template is None:
+        return ""
+    text = str(template).strip()
+    if not text:
+        return ""
+    return text.replace("{user}", line.user or "chat")
+
+
 def mention_waits(mention: bool, mention_boost: bool, cooldown: float, per_user: float) -> tuple[float, float]:
     """Global cooldown and per-user cooldown for this line."""
     if mention and mention_boost:

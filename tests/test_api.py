@@ -259,3 +259,33 @@ def test_mic_ignores_chunks_until_it_is_armed(settings, monkeypatch):
 
     asyncio.run(run())
     assert heard == []
+
+
+def test_control_key_is_limited_to_booth_actions(tmp_path, settings, monkeypatch):
+    monkeypatch.setenv("COHOST_CONTROL_KEY", "deck-secret")
+    client, _orch = _client(tmp_path, settings)
+    key = {
+        "x-cohost-token": "deck-secret",
+        "origin": "http://127.0.0.1:8080",
+    }
+    with client:
+        assert client.post("/api/interrupt", headers=key, json={}).status_code == 200
+        assert client.post("/api/mood", headers=key, json={"mood": "hype"}).status_code == 200
+        assert client.post("/api/tts/mute", headers=key, json={"mute": True}).status_code == 200
+        assert client.post("/api/profile", headers=key, json={"name": ""}).status_code == 200
+        assert client.post("/api/persona", headers=key, json={"text": "name: nope"}).status_code == 401
+        assert client.post("/api/say", headers=key, json={"text": "hi"}).status_code == 401
+        assert client.post("/api/interrupt", headers=_headers(client), json={}).status_code == 200
+
+
+def test_unset_control_key_changes_nothing(tmp_path, settings, monkeypatch):
+    monkeypatch.delenv("COHOST_CONTROL_KEY", raising=False)
+    client, _orch = _client(tmp_path, settings)
+    key = {
+        "x-cohost-token": "deck-secret",
+        "origin": "http://127.0.0.1:8080",
+    }
+    with client:
+        assert client.post("/api/interrupt", headers=key, json={}).status_code == 401
+        assert client.post("/api/persona", headers=key, json={"text": "name: nope"}).status_code == 401
+        assert client.post("/api/interrupt", headers=_headers(client), json={}).status_code == 200

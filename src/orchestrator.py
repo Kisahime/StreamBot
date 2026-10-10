@@ -133,8 +133,11 @@ class Orchestrator:
     async def set_language(self, language):
         return await lifecycle.set_language(self, language)
 
-    async def set_voice(self, voice):
-        return await lifecycle.set_voice(self, voice)
+    async def set_voice(self, voice, *, persist=True):
+        return await lifecycle.set_voice(self, voice, persist=persist)
+
+    def note_timing(self, key, value):
+        return voice_flow.note_timing(self, key, value)
 
     def set_duck(self, enabled):
         return lifecycle.set_duck(self, enabled)

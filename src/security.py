@@ -17,6 +17,17 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]", "::1")
+# Stable COHOST_CONTROL_KEY is accepted only on these booth actions.
+CONTROL_PATHS = frozenset(
+    {
+        "/api/interrupt",
+        "/api/tts/mute",
+        "/api/ptt",
+        "/api/marker",
+        "/api/mood",
+        "/api/profile",
+    }
+)
 
 
 def trusted_hosts(port: int = 8080) -> list[str]:
@@ -39,6 +50,16 @@ def token_matches(got: str, expected: str) -> bool:
     if not expected or not got or len(got) != len(expected):
         return False
     return secrets.compare_digest(got, expected)
+
+
+def write_authorized(got: str, app, path: str) -> bool:
+    """Session token works everywhere. The optional control key is allow-listed."""
+    state = getattr(app, "state", None)
+    if token_matches(got, getattr(state, "control_token", "")):
+        return True
+    if path not in CONTROL_PATHS:
+        return False
+    return token_matches(got, str(getattr(state, "control_key", "") or ""))
 
 
 class BoothGuard:
@@ -73,8 +94,7 @@ class BoothGuard:
                 )
                 return
             app = scope.get("app")
-            expected = getattr(getattr(app, "state", None), "control_token", "")
-            if not token_matches(headers.get("x-cohost-token") or "", expected):
+            if not write_authorized(headers.get("x-cohost-token") or "", app, path):
                 await JSONResponse({"ok": False, "error": "missing control token"}, status_code=401)(
                     scope, receive, send
                 )

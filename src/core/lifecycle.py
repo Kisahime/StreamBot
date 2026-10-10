@@ -79,6 +79,9 @@ def bind(
         "events_speak": bool(settings.events_speak),
         "post_voice_replies_to_chat": bool(settings.post_voice_replies_to_chat),
         "max_replies_per_minute": int(settings.max_replies_per_minute),
+        "tts_voice": settings.tts_voice,
+        "length_scale": float(settings.tts_length_scale),
+        "persona_file": str(orch.persona_path),
     }
     orch.booth = load_booth(
         orch.data_dir / "booth.json",
@@ -153,6 +156,13 @@ def bind(
         "first_audio_ms": None,
         "chat_send_ms": None,
     }
+    orch.timing_samples = {
+        "stt_ms": deque(maxlen=50),
+        "first_token_ms": deque(maxlen=50),
+        "first_audio_ms": deque(maxlen=50),
+        "chat_send_ms": deque(maxlen=50),
+    }
+    orch._custom_at: dict[str, float] = {}
 
 
 def _refresh_prompts(orch) -> None:
@@ -230,6 +240,20 @@ def _install_profile(orch, name: str, *, persist: bool) -> str:
     orch.settings.events_speak = bool(values["events_speak"])
     orch.settings.post_voice_replies_to_chat = bool(values["post_voice_replies_to_chat"])
     orch.settings.max_replies_per_minute = int(values["max_replies_per_minute"])
+    orch.settings.tts_length_scale = float(values.get("length_scale", orch._runtime_base["length_scale"]))
+    voice = str(values.get("tts_voice") or orch._runtime_base["tts_voice"])
+    if voice not in orch.settings.tts_voices:
+        raise ValueError(f"unknown voice: {voice}")
+    orch.settings.tts_voice = voice
+    raw_persona = str(values.get("persona_file") or orch._runtime_base["persona_file"])
+    persona_path = Path(raw_persona)
+    if not persona_path.is_absolute():
+        persona_path = _live("ROOT") / persona_path
+    if persona_path != Path(orch.persona_path):
+        if not persona_path.exists():
+            raise ValueError(f"persona file not found: {persona_path}")
+        orch.persona_path = persona_path
+        orch.reload_persona()
     orch._refresh_prompts()
     if persist:
         orch._persist_booth()
@@ -237,7 +261,10 @@ def _install_profile(orch, name: str, *, persist: bool) -> str:
 
 
 async def apply_profile(orch, name: str) -> str:
+    before_voice = orch.settings.tts_voice
     canonical = orch._install_profile(name, persist=True)
+    if orch.settings.tts_voice != before_voice:
+        await orch.set_voice(orch.settings.tts_voice, persist=False)
     await orch.hub.patch_status(
         mood=orch.mood, profile=canonical, post_voice=bool(orch.settings.post_voice_replies_to_chat)
     )
@@ -540,7 +567,7 @@ async def set_language(orch, language: str) -> None:
     await orch.hub.patch_status(stt_ready=orch.stt.model is not None)
 
 
-async def set_voice(orch, voice: str) -> None:
+async def set_voice(orch, voice: str, *, persist: bool = True) -> None:
     voice = (voice or "").strip()
     if voice not in orch.settings.tts_voices:
         raise ValueError(f"unknown voice: {voice}")
@@ -554,7 +581,8 @@ async def set_voice(orch, voice: str) -> None:
 
     orch.tts.on_progress = progress
     await asyncio.to_thread(orch.tts.ensure_files)
-    await asyncio.to_thread(_live("update_config"), {"tts.voice": voice})
+    if persist:
+        await asyncio.to_thread(_live("update_config"), {"tts.voice": voice})
     await orch.hub.patch_status(tts_ready=orch.tts.ready)
 
 

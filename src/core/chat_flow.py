@@ -18,7 +18,7 @@ from src.memory import (
     sanitize_reply,
     streamer_smalltalk_fallback,
 )
-from src.policy import chat_action, control_command_names, mention_waits, pixel_control
+from src.policy import chat_action, control_command_names, custom_reply, mention_waits, pixel_control
 from src.safety import DEFLECT, fence_viewer_text, is_blocked
 from src.twitch.chat import ChatLine
 
@@ -248,6 +248,11 @@ async def _consider_chat_locked(orch) -> bool:
         await orch._publish_queue()
         await orch._perform_chat(target, ignore_rate=False)
         return True
+    if custom_reply(target, orch.settings.custom_commands):
+        orch._drop_chat_target(target)
+        await orch._publish_queue()
+        await orch._perform_chat(target, ignore_rate=False)
+        return True
     action = chat_action(target, welcome_first_time=orch.settings.welcome_first_time)
     ok, why = orch._rate_ok(mention=action == "speak", user=target.user)
     if not ok:
@@ -284,11 +289,21 @@ async def _perform_chat(orch, target: ChatLine, *, ignore_rate: bool) -> None:
         orch._last_control_at = time.monotonic()
         orch._mark_reply(target.user)
         return
-    action = chat_action(target, welcome_first_time=orch.settings.welcome_first_time)
     command = (target.command or "").lower()
     if command in orch.settings.mod_commands and (not orch._can_run_mod_command(target)):
         await orch._note_skip("not a mod", target.user)
         return
+    filled = custom_reply(target, orch.settings.custom_commands)
+    if filled:
+        if not ignore_rate and not _custom_ready(orch, command):
+            await orch._note_skip("command cooldown", target.user)
+            return
+        orch.memory.remember("cohost_chat", orch._cohost_name(), filled, via="chat")
+        await orch._type_ack(filled)
+        orch._custom_at[command] = time.monotonic()
+        orch._mark_reply(target.user)
+        return
+    action = chat_action(target, welcome_first_time=orch.settings.welcome_first_time)
     if command == "!so":
         who = ""
         parts = target.text.split()
@@ -446,9 +461,20 @@ def _control_names(orch) -> set[str]:
     return control_command_names(str(orch.persona.get("name") or ""), orch.settings.control_command)
 
 
+def _custom_ready(orch, command: str) -> bool:
+    wait = float(getattr(orch.settings, "custom_command_cooldown_seconds", 30) or 0)
+    if wait <= 0:
+        return True
+    last = orch._custom_at.get(command, 0.0)
+    return time.monotonic() - last >= wait
+
+
 def _irc_commands(orch) -> list[str]:
     commands = list(orch.settings.chat_commands)
     for name in sorted(orch._control_names()):
+        if name not in commands:
+            commands.append(name)
+    for name in sorted(getattr(orch.settings, "custom_commands", {}) or {}):
         if name not in commands:
             commands.append(name)
     return commands

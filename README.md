@@ -243,6 +243,19 @@ Wake word needs `openwakeword` and never replaces hold-to-talk. Channel-point re
 
 The booth binds to localhost. `server.allow_remote` stays false unless you set it on purpose. Writes need `Content-Type: application/json` and the `X-Cohost-Token` from `GET /api/session` (same browser tab). A foreign `Origin` is rejected. The OBS overlay does not get that token and cannot change anything.
 
+Optional `COHOST_CONTROL_KEY` in `.env` is a stable token for a Stream Deck or hotkey. When it is set, that value is accepted as `X-Cohost-Token` only on `POST /api/interrupt`, `/api/tts/mute`, `/api/ptt`, `/api/marker`, `/api/mood`, and `/api/profile`. `/api/persona` and every other write still need the per-launch session token. Leave the key empty and nothing changes.
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8080/api/interrupt -H "Content-Type: application/json" -H "X-Cohost-Token: YOUR_CONTROL_KEY" -d "{}"
+curl.exe -X POST http://127.0.0.1:8080/api/tts/mute -H "Content-Type: application/json" -H "X-Cohost-Token: YOUR_CONTROL_KEY" -d "{\"mute\":true}"
+curl.exe -X POST http://127.0.0.1:8080/api/ptt -H "Content-Type: application/json" -H "X-Cohost-Token: YOUR_CONTROL_KEY" -d "{\"down\":true}"
+curl.exe -X POST http://127.0.0.1:8080/api/marker -H "Content-Type: application/json" -H "X-Cohost-Token: YOUR_CONTROL_KEY" -d "{}"
+curl.exe -X POST http://127.0.0.1:8080/api/mood -H "Content-Type: application/json" -H "X-Cohost-Token: YOUR_CONTROL_KEY" -d "{\"mood\":\"hype\"}"
+curl.exe -X POST http://127.0.0.1:8080/api/profile -H "Content-Type: application/json" -H "X-Cohost-Token: YOUR_CONTROL_KEY" -d "{\"name\":\"Focus game\"}"
+```
+
+On a Stream Deck Website button, set the URL to `http://127.0.0.1:8080/api/interrupt`, method POST, header `Content-Type: application/json`, header `X-Cohost-Token` to the control key, and body `{}`.
+
 ## Backup
 
 `scripts/backup.ps1` zips `data/`, `persona.yaml`, and `config.yaml` into `backups/YYYYMMDD-HHMM.zip` and keeps the last 10. It never puts `.env` in the zip. `backups/` is gitignored.

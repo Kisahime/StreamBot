@@ -60,7 +60,24 @@ def _reward_spec(value: Any) -> RewardSpec:
     return RewardSpec("ignore")
 
 
-def _parse_profiles(raw: Any) -> dict[str, dict[str, Any]]:
+def _parse_custom_commands(raw: Any) -> dict[str, str]:
+    """Fixed chat replies. Keys are normalized to ``!name``."""
+    if not isinstance(raw, dict):
+        return {}
+    commands: dict[str, str] = {}
+    for key, value in raw.items():
+        name = str(key or "").strip().lower()
+        if not name:
+            continue
+        if not name.startswith("!"):
+            name = f"!{name}"
+        text = str(value or "").strip()
+        if text:
+            commands[name] = text
+    return commands
+
+
+def _parse_profiles(raw: Any, voices: list[str] | None = None) -> dict[str, dict[str, Any]]:
     """Named overrides for the runtime keys a profile is allowed to change."""
     if not isinstance(raw, dict):
         return {}
@@ -86,6 +103,17 @@ def _parse_profiles(raw: Any) -> dict[str, dict[str, Any]]:
             spec["post_voice_replies_to_chat"] = bool(body.get("post_voice_replies_to_chat"))
         if "max_replies_per_minute" in body:
             spec["max_replies_per_minute"] = int(body.get("max_replies_per_minute") or 0)
+        if "tts_voice" in body:
+            voice = str(body.get("tts_voice") or "").strip()
+            if voices is not None and voice not in voices:
+                raise ValueError(f"profile {name} has unknown voice: {voice}")
+            spec["tts_voice"] = voice
+        if "length_scale" in body:
+            spec["length_scale"] = float(body.get("length_scale"))
+        if "persona_file" in body:
+            persona_file = str(body.get("persona_file") or "").strip()
+            if persona_file:
+                spec["persona_file"] = persona_file
         profiles[str(name)] = spec
     return profiles
 
@@ -189,6 +217,8 @@ class Settings:
         self.min_send_gap_seconds = float(_get(data, "chat.min_send_gap_seconds", 1.2))
         self.chat_commands = _command_list(data, "chat.commands", ["!so", "!pixel", "!ask"])
         self.mod_commands = _command_list(data, "chat.mod_commands", ["!so"])
+        self.custom_commands = _parse_custom_commands(_get(data, "chat.custom_commands", {}) or {})
+        self.custom_command_cooldown_seconds = float(_get(data, "chat.custom_command_cooldown_seconds", 30))
         self.shoutout_cooldown_seconds = float(_get(data, "chat.shoutout_cooldown_seconds", 120))
         self.shoutout_line = str(_get(data, "chat.shoutout_line", "go check out {user}") or "go check out {user}")
         self.shoutout_speak = bool(_get(data, "chat.shoutout_speak", True))
@@ -227,7 +257,7 @@ class Settings:
             for key, value in rewards.items()
             if str(key).strip()
         }
-        self.profiles = _parse_profiles(_get(data, "profiles", {}) or {})
+        self.profiles = _parse_profiles(_get(data, "profiles", {}) or {}, voices=list(self.tts_voices))
 
         self.overlay_alert_hold = float(_get(data, "overlay.alert_hold_seconds", 6))
         self.log_level = str(_get(data, "logging.level", "INFO") or "INFO").upper()

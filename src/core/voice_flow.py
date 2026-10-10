@@ -25,6 +25,14 @@ from src.safety import DEFLECT, clean_chat_output, fence_viewer_text, is_blocked
 log = logging.getLogger("cohost.orch")
 
 
+def note_timing(orch, key: str, value: int) -> None:
+    sample = int(value)
+    orch.timings[key] = sample
+    bucket = getattr(orch, "timing_samples", {}).get(key)
+    if bucket is not None:
+        bucket.append(sample)
+
+
 def _bump_voice(orch) -> int:
     orch._voice_gen += 1
     orch._voice_cancel.set()
@@ -75,7 +83,7 @@ async def _emit_cohost(orch, reply: str, *, thread: str, speak: bool, post: bool
             try:
                 t0 = time.perf_counter()
                 await orch.twitch.send(chat_text)
-                orch.timings["chat_send_ms"] = int((time.perf_counter() - t0) * 1000)
+                note_timing(orch, "chat_send_ms", int((time.perf_counter() - t0) * 1000))
                 await orch.hub.broadcast(
                     {
                         "type": "chat",
@@ -130,7 +138,7 @@ async def on_utterance(orch, audio: np.ndarray) -> None:
             await orch.hub.broadcast({"type": "log", "data": f"STT error: {e}"})
             await orch.hub.patch_status(phase="listening" if orch.mic.listen_enabled else "idle")
             return
-        orch.timings["stt_ms"] = int((time.perf_counter() - started) * 1000)
+        note_timing(orch, "stt_ms", int((time.perf_counter() - started) * 1000))
         if gen != orch._voice_gen:
             return
         if not text:
@@ -279,7 +287,7 @@ async def _voice_reply(orch, user_text: str, gen: int, started: float) -> None:
             return
         if not first_token:
             first_token = True
-            orch.timings["first_token_ms"] = int((time.perf_counter() - started) * 1000)
+            note_timing(orch, "first_token_ms", int((time.perf_counter() - started) * 1000))
         sentence = orch._clean(sentence.strip())
         if not sentence or is_generic_filler(sentence, orch._banned_extra()):
             continue
@@ -293,7 +301,7 @@ async def _voice_reply(orch, user_text: str, gen: int, started: float) -> None:
             await orch._speak(sentence)
             if not first_audio:
                 first_audio = True
-                orch.timings["first_audio_ms"] = int((time.perf_counter() - started) * 1000)
+                note_timing(orch, "first_audio_ms", int((time.perf_counter() - started) * 1000))
         if gen != orch._voice_gen:
             return
     reply = orch._clean(" ".join(full).strip())
@@ -326,7 +334,7 @@ async def _emit_voice_result(
             try:
                 t0 = time.perf_counter()
                 await orch.twitch.send(short)
-                orch.timings["chat_send_ms"] = int((time.perf_counter() - t0) * 1000)
+                note_timing(orch, "chat_send_ms", int((time.perf_counter() - t0) * 1000))
                 orch.memory.remember(
                     "cohost_chat", orch._cohost_name(), short, via="chat", thread=STREAMER_THREAD
                 )

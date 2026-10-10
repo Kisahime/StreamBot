@@ -456,12 +456,38 @@ function renderSys(health) {
     btn.title = missing ? state : "";
   }
   const timings = health.timings || {};
+  const p50 = health.timings_p50 || {};
+  const p95 = health.timings_p95 || {};
   const bits = [];
-  if (timings.stt_ms != null) bits.push(`STT ${timings.stt_ms} ms`);
-  if (timings.first_token_ms != null) bits.push(`token ${timings.first_token_ms} ms`);
-  if (timings.first_audio_ms != null) bits.push(`audio ${timings.first_audio_ms} ms`);
-  if (timings.chat_send_ms != null) bits.push(`chat ${timings.chat_send_ms} ms`);
+  for (const [key, label] of [
+    ["stt_ms", "STT"],
+    ["first_token_ms", "token"],
+    ["first_audio_ms", "audio"],
+    ["chat_send_ms", "chat"],
+  ]) {
+    const parts = [];
+    if (timings[key] != null) parts.push(`${timings[key]} ms`);
+    if (p50[key] != null) parts.push(`p50 ${p50[key]}`);
+    if (p95[key] != null) parts.push(`p95 ${p95[key]}`);
+    if (parts.length) bits.push(`${label} ${parts.join(" ")}`);
+  }
   $("timingLine").textContent = bits.join(" · ");
+  const timingWarn = $("timingWarn");
+  if (timingWarn) {
+    timingWarn.replaceChildren();
+    const slow = Number(p95.first_audio_ms);
+    const message = health.timing_warning || (slow > 2500 ? "First-audio p95 is over 2.5 s." : "");
+    if (message) {
+      timingWarn.hidden = false;
+      timingWarn.append(document.createTextNode(`${message} `));
+      const link = document.createElement("a");
+      link.href = "#vram-tips";
+      link.textContent = "VRAM tips";
+      timingWarn.append(link);
+    } else {
+      timingWarn.hidden = true;
+    }
+  }
   if (health.mood && document.activeElement !== $("mood")) $("mood").value = health.mood;
   const profileSelect = $("profileSelect");
   if (profileSelect) {
@@ -487,21 +513,25 @@ function renderSys(health) {
   const profileLine = $("profileLine");
   if (profileLine && runtime.mood) {
     const spoken = runtime.events_speak ? "spoken" : "typed";
-    profileLine.textContent = `mood ${runtime.mood} · ${runtime.max_replies_per_minute} replies/min · cooldown ${runtime.cooldown_seconds}s · events ${spoken}`;
+    const voiceName = health.voice ? ` · ${health.voice}` : "";
+    profileLine.textContent = `mood ${runtime.mood} · ${runtime.max_replies_per_minute} replies/min · cooldown ${runtime.cooldown_seconds}s · events ${spoken}${voiceName}`;
   }
   if (health.language && document.activeElement !== $("langSelect")) $("langSelect").value = health.language;
   if (!devicesLoaded && health.devices) {
     const devices = health.devices;
     applyDeviceList(devices, health);
   }
-  if (health.voices && !$("voiceSelect").options.length) {
+  const voiceSelect = $("voiceSelect");
+  if (health.voices && voiceSelect && !voiceSelect.options.length) {
     fillSelect(
-      $("voiceSelect"),
+      voiceSelect,
       health.voices.map((v) => ({ value: v, label: v })),
       health.voice,
       null,
     );
-    $("voiceSelect").value = health.voice || "";
+  }
+  if (health.voice && voiceSelect && voiceSelect.options.length && document.activeElement !== voiceSelect) {
+    voiceSelect.value = health.voice;
   }
   const vad = health.vad || {};
   if (document.activeElement !== $("silence") && vad.silence_ms) {
@@ -779,6 +809,27 @@ async function buildRecap(vibe) {
     box.dataset.copied = "";
   }
   return data;
+}
+const transcriptBtn = $("transcriptBtn");
+if (transcriptBtn) {
+  transcriptBtn.addEventListener("click", async () => {
+    try {
+      const res = await fetch("/api/transcript", { cache: "no-store" });
+      if (!res.ok) throw new Error("Transcript download failed.");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const named = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "");
+      link.href = url;
+      link.download = named ? named[1] : "transcript.jsonl";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      hint.textContent = String(e.message || e);
+    }
+  });
 }
 const recapBtn = $("recapBtn");
 if (recapBtn) {
