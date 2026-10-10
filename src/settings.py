@@ -13,6 +13,19 @@ QUALITY_MODEL = "qwen2.5:7b-instruct-q4_K_M"
 SNAPPY_MODEL = "qwen2.5:3b"
 
 
+def _command_list(data: dict[str, Any], path: str, default: list[str]) -> list[str]:
+    raw = _get(data, path, default) or []
+    commands: list[str] = []
+    for item in raw:
+        text = str(item).strip().lower()
+        if not text:
+            continue
+        if not text.startswith("!"):
+            text = "!" + text
+        commands.append(text)
+    return commands
+
+
 def _get(data: dict[str, Any], path: str, default: Any = None) -> Any:
     cur: Any = data
     for part in path.split("."):
@@ -92,8 +105,11 @@ class Settings:
         self.per_user_cooldown_seconds = float(_get(data, "chat.per_user_cooldown_seconds", 20))
         self.auto_reconnect_twitch = bool(_get(data, "chat.auto_reconnect", True))
         self.min_send_gap_seconds = float(_get(data, "chat.min_send_gap_seconds", 1.2))
-        self.chat_commands = [str(c).lower() for c in (_get(data, "chat.commands", ["!so", "!pixel", "!ask"]) or [])]
+        self.chat_commands = _command_list(data, "chat.commands", ["!so", "!pixel", "!ask"])
+        self.mod_commands = _command_list(data, "chat.mod_commands", ["!so"])
+        self.shoutout_cooldown_seconds = float(_get(data, "chat.shoutout_cooldown_seconds", 120))
         self.ambient_chat_context = int(_get(data, "chat.ambient_context_lines", 6))
+        self.allow_links = bool(_get(data, "safety.allow_links", False))
 
         self.spoken_turns = int(_get(data, "memory.spoken_turns", 8))
         self.chat_context_lines = int(_get(data, "memory.chat_context_lines", 20))
@@ -174,6 +190,8 @@ class Settings:
         if self.channel_points_enabled:
             subs.append(("channel.channel_points_custom_reward_redemption.add", "1"))
         if self.hype_train_enabled:
+            # Version 2 is what Twitch's EventSub reference lists. Version 1 was
+            # withdrawn on 15 Jan 2026, so "try 1" would be rejected.
             subs.extend(
                 [
                     ("channel.hype_train.begin", "2"),

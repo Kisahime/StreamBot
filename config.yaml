@@ -68,6 +68,10 @@ chat:
     - "!so"
     - "!pixel"
     - "!ask"
+  # !so is also a mod command: viewers are dropped with skip reason "not a mod".
+  mod_commands:
+    - "!so"
+  shoutout_cooldown_seconds: 120
 
 memory:
   spoken_turns: 8
@@ -83,14 +87,18 @@ events:
   follow_batch_seconds: 8
   speak: true
   post_to_chat: true
-  # Each of these is off until you turn it on. Missing scopes fail that subscription only.
-  bits: true
-  channel_points: true
-  hype_train: true
-  polls: true
-  predictions: true
+  # Each of these is off until you turn it on. Missing scopes skip that feed only.
+  bits: false
+  channel_points: false
+  hype_train: false
+  polls: false
+  predictions: false
   channel_point_rewards:
     hydrate: speak
 
 overlay:
   alert_hold_seconds: 6
+
+safety:
+  # Pixel strips links from chat posts unless this is true.
+  allow_links: false

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 import numpy as np
 import sounddevice as sd
@@ -23,10 +23,10 @@ class MicListener:
         self.on_utterance = on_utterance
         self.listen_enabled = False
         self.ptt_down = False
-        self._stream: Optional[sd.InputStream] = None
+        self._stream: sd.InputStream | None = None
         self._queue: asyncio.Queue[np.ndarray] = asyncio.Queue()
-        self._task: Optional[asyncio.Task] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._task: asyncio.Task | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self.level = 0.0
         self.wake = WakeWord(settings)
         self._wake_buf: deque[np.ndarray] = deque()

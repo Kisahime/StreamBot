@@ -5,7 +5,6 @@ import logging
 import time
 from collections import deque
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import yaml
@@ -32,7 +31,7 @@ from src.memory import (
     streamer_smalltalk_fallback,
 )
 from src.policy import chat_action, mention_waits
-from src.safety import DEFLECT, is_blocked
+from src.safety import DEFLECT, clean_chat_output, is_blocked
 from src.settings import ROOT, Settings, update_config
 from src.tts.piper import PiperTTS
 from src.twitch.chat import ChatLine, TwitchChat, looks_like_auth_failure
@@ -59,18 +58,30 @@ EVENT_PRIORITY = {
 
 
 class Orchestrator:
-    def __init__(self, settings: Settings, hub: Hub, data_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        hub: Hub,
+        data_dir: Path | None = None,
+        *,
+        llm: OllamaClient | None = None,
+        tts: PiperTTS | None = None,
+        stt: SpeechToText | None = None,
+        mic: MicListener | None = None,
+        persona_path: Path | None = None,
+    ) -> None:
         self.settings = settings
         self.hub = hub
-        self.llm = OllamaClient(settings)
-        self.stt = SpeechToText(settings)
-        self.tts = PiperTTS(settings)
-        self.mic = MicListener(settings, self.on_utterance)
+        # Tests pass fakes so importing this class never has to open a mic, model, or speaker.
+        self.llm = OllamaClient(settings) if llm is None else llm
+        self.stt = SpeechToText(settings) if stt is None else stt
+        self.tts = PiperTTS(settings) if tts is None else tts
+        self.mic = MicListener(settings, self.on_utterance) if mic is None else mic
         self.duck = Duck(settings)
         self.data_dir = data_dir or (ROOT / "data")
-        self.twitch: Optional[TwitchChat] = None
-        self.eventsub: Optional[EventSubClient] = None
-        self.persona = load_persona()
+        self.twitch: TwitchChat | None = None
+        self.eventsub: EventSubClient | None = None
+        self.persona = load_persona(persona_path)
         self.identity: StreamerIdentity = load_identity(
             self.data_dir / "streamer.json",
             default_login=settings.twitch_channel,
@@ -106,9 +117,9 @@ class Orchestrator:
         self._speak_depth = 0
         self._event_pending: deque[StreamEvent] = deque(maxlen=40)
         self._follow_names: list[str] = []
-        self._follow_task: Optional[asyncio.Task] = None
+        self._follow_task: asyncio.Task | None = None
         self._cheers: list[StreamEvent] = []
-        self._cheer_task: Optional[asyncio.Task] = None
+        self._cheer_task: asyncio.Task | None = None
         self.tts_mute = self.booth.tts_mute
         self._want_twitch = False
         self._want_events = False
@@ -117,11 +128,12 @@ class Orchestrator:
         self._stopping = False
         self._irc_fatal = False
         self._eventsub_fatal = False
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._last_skip = {"reason": "", "user": ""}
         self._catchphrase_at: dict[str, float] = {}
         self._last_raider = ""
         self._last_raider_id = ""
+        self._last_shoutout_at = 0.0
         self.timings: dict[str, int | None] = {
             "stt_ms": None,
             "first_token_ms": None,
@@ -769,9 +781,17 @@ class Orchestrator:
         )
         return reply
 
+    def _chat_text(self, text: str, target_user: str | None = None) -> str:
+        return clean_chat_output(
+            text,
+            target_user,
+            allow_links=self.settings.allow_links,
+            max_chars=self.settings.chat_max_chars,
+        )
+
     async def _emit_cohost(self, reply: str, *, thread: str, speak: bool, post: bool) -> None:
         spoken = for_speech(reply)
-        chat_text = reply[: self.settings.chat_max_chars]
+        chat_text = self._chat_text(reply)
         self.memory.remember(
             "cohost_voice" if speak else "cohost_chat",
             str(self.persona.get("name") or "Pixel"),
@@ -782,15 +802,18 @@ class Orchestrator:
         asyncio.create_task(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}))
         await self.hub.broadcast({"type": "transcript", "data": {"role": "cohost", "text": spoken}})
         if post and self.twitch and self.twitch.connected:
-            try:
-                t0 = time.perf_counter()
-                await self.twitch.send(chat_text)
-                self.timings["chat_send_ms"] = int((time.perf_counter() - t0) * 1000)
-                await self.hub.broadcast(
-                    {"type": "chat", "data": {"user": self.persona.get("name"), "text": chat_text, "bot": True}}
-                )
-            except Exception:
-                log.exception("event chat send failed")
+            if not chat_text:
+                await self._note_skip("output guard", "")
+            else:
+                try:
+                    t0 = time.perf_counter()
+                    await self.twitch.send(chat_text)
+                    self.timings["chat_send_ms"] = int((time.perf_counter() - t0) * 1000)
+                    await self.hub.broadcast(
+                        {"type": "chat", "data": {"user": self.persona.get("name"), "text": chat_text, "bot": True}}
+                    )
+                except Exception:
+                    log.exception("event chat send failed")
         if speak and not self.tts_mute and not self._busy_voice:
             await self.hub.patch_status(phase="speaking", speaking=True, caption=spoken, timings=dict(self.timings))
             await self._speak(spoken)
@@ -896,13 +919,15 @@ class Orchestrator:
 
     async def say_line(self, text: str, post_chat: bool = True) -> None:
         reply = sanitize_reply(text, str(self.persona.get("name") or ""))
-        if not reply:
+        chat_text = self._chat_text(reply)
+        if not chat_text:
+            await self._note_skip("output guard", "")
             return
-        spoken = for_speech(reply)
+        spoken = for_speech(chat_text)
         if post_chat and self.twitch and self.twitch.connected:
-            await self.twitch.send(reply[: self.settings.chat_max_chars])
+            await self.twitch.send(chat_text)
             await self.hub.broadcast(
-                {"type": "chat", "data": {"user": self.persona.get("name"), "text": reply[: self.settings.chat_max_chars], "bot": True}}
+                {"type": "chat", "data": {"user": self.persona.get("name"), "text": chat_text, "bot": True}}
             )
         await self.hub.broadcast({"type": "transcript", "data": {"role": "cohost", "text": spoken}})
         if not self.tts_mute:
@@ -1023,21 +1048,26 @@ class Orchestrator:
         if post and self.settings.post_voice_replies_to_chat and self.twitch and self.twitch.connected:
             if gen != self._voice_gen:
                 return
-            short = reply[: self.settings.chat_max_chars]
-            try:
-                t0 = time.perf_counter()
-                await self.twitch.send(short)
-                self.timings["chat_send_ms"] = int((time.perf_counter() - t0) * 1000)
-                self.memory.remember(
-                    "cohost_chat",
-                    str(self.persona.get("name") or "Pixel"),
-                    short,
-                    via="chat",
-                    thread=STREAMER_THREAD,
-                )
-                await self.hub.broadcast({"type": "chat", "data": {"user": self.persona.get("name"), "text": short, "bot": True}})
-            except Exception:
-                log.exception("failed to echo voice reply to chat")
+            short = self._chat_text(reply)
+            if not short:
+                await self._note_skip("output guard", "")
+            else:
+                try:
+                    t0 = time.perf_counter()
+                    await self.twitch.send(short)
+                    self.timings["chat_send_ms"] = int((time.perf_counter() - t0) * 1000)
+                    self.memory.remember(
+                        "cohost_chat",
+                        str(self.persona.get("name") or "Pixel"),
+                        short,
+                        via="chat",
+                        thread=STREAMER_THREAD,
+                    )
+                    await self.hub.broadcast(
+                        {"type": "chat", "data": {"user": self.persona.get("name"), "text": short, "bot": True}}
+                    )
+                except Exception:
+                    log.exception("failed to echo voice reply to chat")
         await self.hub.patch_status(
             phase="listening" if self.mic.listen_enabled else "idle",
             speaking=False,
@@ -1145,15 +1175,23 @@ class Orchestrator:
         self._chat_pending.clear()
         self._chat_pending.extend(kept)
         await self._publish_queue()
-        if action == "command" or target.command == "!so":
+        if action == "command" or target.command == "!so" or target.command in self.settings.mod_commands:
+            if target.command in self.settings.mod_commands and not self._can_run_mod_command(target):
+                await self._note_skip("not a mod", target.user)
+                return True
             who = ""
             parts = target.text.split()
             if len(parts) > 1:
                 who = parts[1].lstrip("@")
+            if not self._shoutout_ready():
+                await self._note_skip("shoutout cooldown", target.user)
+                return True
             try:
                 await self.shoutout(who or None)
             except Exception as e:
                 await self.hub.broadcast({"type": "log", "data": f"Shoutout failed: {e}"})
+            else:
+                self._last_shoutout_at = time.monotonic()
             self._mark_reply(target.user)
             return True
         await self._decide_chat(target, action)
@@ -1193,9 +1231,13 @@ class Orchestrator:
                 reply = DEFLECT
                 action = "chat"
         if streamer:
-            chat_text = sanitize_reply(reply, str(self.persona.get("name") or ""))[: self.settings.chat_max_chars]
+            chat_text = self._chat_text(sanitize_reply(reply, str(self.persona.get("name") or "")))
         else:
-            chat_text = ensure_chat_mention(reply, line.user)[: self.settings.chat_max_chars]
+            chat_text = self._chat_text(ensure_chat_mention(reply, line.user), target_user=line.user)
+        if not chat_text:
+            await self._note_skip("output guard", line.user)
+            await self.hub.patch_status(phase="listening" if self.mic.listen_enabled else "idle")
+            return
         spoken = for_speech(chat_text)
         thread_key = STREAMER_THREAD if streamer else self.memory.viewer_thread_key(line.user)
         self._mark_reply(line.user)
@@ -1266,7 +1308,21 @@ class Orchestrator:
             },
         ]
         text = self._clean(await self.llm.complete(messages, temperature=mood_temperature(self.mood) if not retry else 0.9))
-        return text[: self.settings.chat_max_chars] if text else ""
+        if not text:
+            return ""
+        target = None if self.identity.is_login(line.user) else line.user
+        return self._chat_text(text, target_user=target)
+
+    def _can_run_mod_command(self, line: ChatLine) -> bool:
+        if line.is_mod or line.is_broadcaster:
+            return True
+        return self.identity.is_login(line.user)
+
+    def _shoutout_ready(self) -> bool:
+        wait = self.settings.shoutout_cooldown_seconds
+        if wait <= 0:
+            return True
+        return (time.monotonic() - self._last_shoutout_at) >= wait
 
     async def shoutout(self, login: str | None) -> None:
         target = (login or self._last_raider or "").lstrip("@").strip()
@@ -1290,9 +1346,12 @@ class Orchestrator:
                 moderator_id=self.eventsub.moderator_id,
             )
         except HelixError as e:
+            if e.status == 429:
+                log.warning("Helix shoutout rate limited (HTTP 429): %s", e)
             if e.status in (401, 403):
                 await self.hub.patch_status(eventsub="token rejected", eventsub_error=str(e))
             raise
+        self._last_shoutout_at = time.monotonic()
         await self.say_line(f"{target}, welcome in.", post_chat=True)
 
     async def mark_moment(self, note: str) -> dict[str, str]:

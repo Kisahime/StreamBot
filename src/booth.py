@@ -12,7 +12,7 @@ class BoothState:
     post_voice_replies_to_chat: bool = True
     mood: str = "normal"
 
-    def clamped(self) -> "BoothState":
+    def clamped(self) -> BoothState:
         if self.mood not in ("chill", "normal", "hype"):
             self.mood = "normal"
         return self

@@ -45,6 +45,11 @@ async def shoutout(
     }
     async with httpx.AsyncClient(timeout=12.0) as client:
         r = await client.post(f"{HELIX}/chat/shoutouts", headers=_headers(token, client_id), params=params)
+    if r.status_code == 429:
+        raise HelixError(
+            "shoutout rate limited (HTTP 429). Twitch is blocking more shoutouts for a bit.",
+            429,
+        )
     if r.status_code not in (200, 204):
         raise HelixError(f"shoutout HTTP {r.status_code}: {r.text[:200]}", r.status_code)
 

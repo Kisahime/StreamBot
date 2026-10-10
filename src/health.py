@@ -8,6 +8,7 @@ from typing import Any
 
 from src.audio.devices import list_devices
 from src.settings import Settings
+from src.twitch.auth import FEED_ORDER
 
 _gpu_cache: tuple[float, dict[str, Any]] | None = None
 _ollama_cache: tuple[float, dict[str, Any]] | None = None
@@ -76,6 +77,7 @@ async def snapshot(settings: Settings, orch) -> dict[str, Any]:
             "ready": orch.tts.ready,
             "error": orch.tts.error,
             "mute": orch.tts_mute,
+            "mode": getattr(orch.tts, "mode", "oneshot"),
         },
         "twitch": {
             "state": orch.hub.status.get("twitch"),
@@ -86,6 +88,7 @@ async def snapshot(settings: Settings, orch) -> dict[str, Any]:
             "has_client_id": bool(settings.twitch_client_id),
             "has_event_token": bool(settings.event_token()),
             "events_enabled": settings.events_enabled,
+            "feeds": _twitch_feeds(orch),
         },
         "persona": orch.persona.get("name"),
         "streamer": {
@@ -95,7 +98,7 @@ async def snapshot(settings: Settings, orch) -> dict[str, Any]:
         },
         "memory": orch.memory.snapshot(),
         "devices": _devices_cache,
-        "setup": _setup_hints(ollama, settings, gpu),
+        "setup": _setup_hints(ollama, settings, gpu, orch),
         "vram": {
             "profile": settings.vram_profile,
             "warn_mb": settings.vram_warn_mb,
@@ -121,8 +124,17 @@ async def snapshot(settings: Settings, orch) -> dict[str, Any]:
     }
 
 
-def _setup_hints(ollama: dict[str, Any], settings: Settings, gpu: dict[str, Any] | None = None) -> list[str]:
+def _twitch_feeds(orch) -> dict[str, str]:
+    client = getattr(orch, "eventsub", None)
+    reported = dict(getattr(client, "feed_status", {}) or {})
+    return {name: str(reported.get(name) or "off") for name in FEED_ORDER}
+
+
+def _setup_hints(ollama: dict[str, Any], settings: Settings, gpu: dict[str, Any] | None = None, orch=None) -> list[str]:
     hints: list[str] = []
+    expires = getattr(getattr(orch, "eventsub", None), "expires_in", None)
+    if isinstance(expires, int) and expires < 24 * 60 * 60:
+        hints.append("Twitch token expires in under 24 hours. Generate a new one before the next stream.")
     hints.extend(settings.secret_hints())
     if not ollama.get("ok"):
         hints.append("Ollama is not reachable. Install it from https://ollama.com and keep it running.")

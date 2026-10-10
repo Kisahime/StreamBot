@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dev dependencies without CUDA wheels
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          # requirements-dev.txt includes requirements.txt, which pins nvidia-* wheels.
+          # Tests stub audio and never load Whisper, so CI skips those downloads.
+          $runtime = Get-Content -Path requirements.txt | Where-Object { $_ -notmatch '^\s*nvidia-' }
+          $dev = Get-Content -Path requirements-dev.txt | Where-Object { $_ -notmatch '^\s*-r\s+requirements\.txt\s*$' }
+          @($runtime + $dev) | Set-Content -Path requirements-ci.txt -Encoding ascii
+          python -m pip install -r requirements-ci.txt
+
+      - name: Lint
+        run: python -m ruff check src tests
+
+      - name: Test
+        run: python -m pytest -q

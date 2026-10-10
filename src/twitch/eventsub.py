@@ -4,11 +4,14 @@ import asyncio
 import json
 import logging
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any
 
 import httpx
 import websockets
+
+from src.twitch.auth import CORE_TYPES, feed_for, missing_scope
 
 log = logging.getLogger("cohost.eventsub")
 
@@ -117,7 +120,7 @@ class EventSubClient:
         channel: str,
         on_event: Callable[[StreamEvent], Awaitable[None]],
         on_status: Callable[[str], Awaitable[None]],
-        subscriptions: Optional[list[tuple[str, str]]] = None,
+        subscriptions: list[tuple[str, str]] | None = None,
     ) -> None:
         self.token = bearer_token(token)
         self.client_id = (client_id or "").strip()
@@ -130,13 +133,17 @@ class EventSubClient:
         self.fatal = False
         self.broadcaster_id = ""
         self.moderator_id = ""
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._stop = False
         self.connecting = False
         self._ready = asyncio.Event()
         self._seen: deque[str] = deque(maxlen=400)
         self._seen_set: set[str] = set()
         self._ws: Any = None
+        self.scopes: set[str] | None = None
+        self.expires_in: int | None = None
+        self.token_login = ""
+        self.feed_status: dict[str, str] = {}
 
     def alive(self) -> bool:
         return bool(self.connected and self._task and not self._task.done())
@@ -155,13 +162,21 @@ class EventSubClient:
         self.connecting = True
         self._ready = asyncio.Event()
         self.last_error = None
+        try:
+            # Lookups happen before the socket opens. EventSub drops a session
+            # that has no subscriptions within about 10s of welcome.
+            await self.refresh_auth()
+            await self.resolve_ids()
+        except Exception:
+            self.connecting = False
+            raise
         self._task = asyncio.create_task(self._run(), name="twitch-eventsub")
         await self.on_status("connecting")
         try:
             await asyncio.wait_for(self._ready.wait(), timeout=20)
-        except asyncio.TimeoutError:
+        except TimeoutError as err:
             await self.disconnect()
-            raise TimeoutError("EventSub websocket did not finish subscribing. Try Connect alerts again.")
+            raise TimeoutError("EventSub websocket did not finish subscribing. Try Connect alerts again.") from err
         finally:
             self.connecting = False
         if not self.connected:
@@ -215,10 +230,10 @@ class EventSubClient:
                 break
             await asyncio.sleep(2)
 
-    async def _session(self, url: str) -> Optional[str]:
+    async def _session(self, url: str) -> str | None:
         async with websockets.connect(url, ping_interval=20, ping_timeout=20, max_size=2**20) as ws:
             self._ws = ws
-            reconnect: Optional[str] = None
+            reconnect: str | None = None
             async for raw in ws:
                 if self._stop:
                     break
@@ -286,31 +301,108 @@ class EventSubClient:
         self._seen_set.add(mid)
         return True
 
-    async def _subscribe_all(self, session_id: str) -> None:
-        headers = {
+    def _helix_headers(self) -> dict[str, str]:
+        return {
             "Authorization": f"Bearer {self.token}",
             "Client-Id": self.client_id,
             "Content-Type": "application/json",
         }
-        async with httpx.AsyncClient(timeout=12.0) as client:
-            me = await client.get(f"{HELIX}/users", headers=headers)
-            if me.status_code != 200:
-                raise RuntimeError(_helix_err("Get Users (self)", me))
-            me_data = (me.json().get("data") or [{}])[0]
-            moderator_id = str(me_data.get("id") or "")
-            self.moderator_id = moderator_id
-            ch = await client.get(f"{HELIX}/users", headers=headers, params={"login": self.channel})
-            if ch.status_code != 200:
-                raise RuntimeError(_helix_err("Get Users (channel)", ch))
-            ch_list = ch.json().get("data") or []
-            if not ch_list:
-                raise RuntimeError(f"Twitch channel login not found: {self.channel}")
-            broadcaster_id = str(ch_list[0].get("id") or "")
-            self.broadcaster_id = broadcaster_id
-            if not broadcaster_id or not moderator_id:
-                raise RuntimeError("Could not resolve broadcaster or token user id")
 
-            async def _one(stype: str, version: str) -> str | None:
+    async def refresh_auth(self) -> None:
+        from src.twitch.auth import validate
+
+        try:
+            meta = await validate(self.token)
+        except Exception as exc:
+            log.warning("Token validate failed; subscriptions will not be scope-filtered: %s", exc)
+            self.scopes = None
+            self.expires_in = None
+            self.token_login = ""
+            return
+        self.scopes = set(meta.get("scopes") or [])
+        expires = meta.get("expires_in")
+        self.expires_in = int(expires) if expires is not None else None
+        self.token_login = str(meta.get("login") or "")
+        user_id = str(meta.get("user_id") or "")
+        if user_id:
+            self.moderator_id = user_id
+
+    async def resolve_ids(self) -> None:
+        if self.broadcaster_id and self.moderator_id:
+            return
+        headers = self._helix_headers()
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            if not self.moderator_id:
+                me = await client.get(f"{HELIX}/users", headers=headers)
+                if me.status_code != 200:
+                    raise RuntimeError(_helix_err("Get Users (self)", me))
+                me_data = (me.json().get("data") or [{}])[0]
+                self.moderator_id = str(me_data.get("id") or "")
+            if not self.broadcaster_id:
+                ch = await client.get(f"{HELIX}/users", headers=headers, params={"login": self.channel})
+                if ch.status_code != 200:
+                    raise RuntimeError(_helix_err("Get Users (channel)", ch))
+                ch_list = ch.json().get("data") or []
+                if not ch_list:
+                    raise RuntimeError(f"Twitch channel login not found: {self.channel}")
+                self.broadcaster_id = str(ch_list[0].get("id") or "")
+        if not self.broadcaster_id or not self.moderator_id:
+            raise RuntimeError("Could not resolve broadcaster or token user id")
+
+    def _note_feed(self, subscription_type: str, status: str) -> None:
+        feed = feed_for(subscription_type)
+        current = self.feed_status.get(feed)
+        if status == "ok":
+            if current is None:
+                self.feed_status[feed] = "ok"
+            return
+        self.feed_status[feed] = status
+
+    async def _subscribe_all(self, session_id: str) -> None:
+        if not self.broadcaster_id or not self.moderator_id:
+            await self.resolve_ids()
+        self.feed_status = {}
+        headers = self._helix_headers()
+        broadcaster_id = self.broadcaster_id
+        moderator_id = self.moderator_id
+        core = [item for item in self.subscriptions if item[0] in CORE_TYPES]
+        extra = [item for item in self.subscriptions if item[0] not in CORE_TYPES]
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            errors = await self._post_subscriptions(client, headers, session_id, broadcaster_id, moderator_id, core)
+            errors.extend(
+                await self._post_subscriptions(client, headers, session_id, broadcaster_id, moderator_id, extra)
+            )
+        attempted = [
+            item
+            for item in self.subscriptions
+            if not str(self.feed_status.get(feed_for(item[0]), "")).startswith("missing scope")
+        ]
+        if attempted and len(errors) == len(attempted):
+            raise RuntimeError("; ".join(errors))
+        if errors:
+            log.warning("Some EventSub subscriptions failed: %s", "; ".join(errors))
+            self.last_error = "; ".join(errors)
+
+    async def _post_subscriptions(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        session_id: str,
+        broadcaster_id: str,
+        moderator_id: str,
+        items: list[tuple[str, str]],
+    ) -> list[str]:
+        if not items:
+            return []
+        sem = asyncio.Semaphore(4)
+
+        async def _one(stype: str, version: str) -> str | None:
+            scope = missing_scope(self.scopes, stype)
+            if scope:
+                self._note_feed(stype, f"missing scope {scope}")
+                log.info("Skipping %s: missing scope %s", stype, scope)
+                return None
+            async with sem:
                 if stype == "channel.follow":
                     condition = {"broadcaster_user_id": broadcaster_id, "moderator_user_id": moderator_id}
                 elif stype == "channel.raid":
@@ -323,18 +415,16 @@ class EventSubClient:
                     "condition": condition,
                     "transport": {"method": "websocket", "session_id": session_id},
                 }
-                r = await client.post(f"{HELIX}/eventsub/subscriptions", headers=headers, json=body)
-                if r.status_code in (200, 202, 409):
-                    return None
-                return f"{stype}: {_helix_err('subscribe', r)}"
+                response = await client.post(f"{HELIX}/eventsub/subscriptions", headers=headers, json=body)
+            if response.status_code in (200, 202, 409):
+                self._note_feed(stype, "ok")
+                return None
+            message = f"{stype}: {_helix_err('subscribe', response)}"
+            self._note_feed(stype, f"HTTP {response.status_code} {message}"[:180])
+            return message
 
-            results = await asyncio.gather(*(_one(stype, version) for stype, version in self.subscriptions))
-            errors = [item for item in results if item]
-            if len(errors) == len(self.subscriptions):
-                raise RuntimeError("; ".join(errors))
-            if errors:
-                log.warning("Some EventSub subscriptions failed: %s", "; ".join(errors))
-                self.last_error = "; ".join(errors)
+        results = await asyncio.gather(*(_one(stype, version) for stype, version in items))
+        return [item for item in results if item]
 
 
 def _looks_like_auth(text: str) -> bool:
@@ -358,7 +448,7 @@ def _hype_extra(event: dict[str, Any]) -> dict[str, Any]:
     return {"level": event.get("level") or 1, "train": train}
 
 
-def _parse_notification(stype: str, event: dict[str, Any], channel: str = "") -> Optional[StreamEvent]:
+def _parse_notification(stype: str, event: dict[str, Any], channel: str = "") -> StreamEvent | None:
     user = (
         event.get("user_name")
         or event.get("user_login")

@@ -4,9 +4,11 @@ import asyncio
 import json
 import logging
 import os
+import queue
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import wave
 import zipfile
@@ -60,6 +62,15 @@ class PiperTTS:
         self.speaking = False
         self._proc: subprocess.Popen | None = None
         self._json_input = True
+        self._json_retry_at = 0.0
+        self._json_retry_after = 60.0
+        self._persistent_timeout = 25.0
+        self._stdout_q: queue.Queue[str] = queue.Queue()
+        self._reader_gen = 0
+
+    @property
+    def mode(self) -> str:
+        return "persistent" if self._json_input else "oneshot"
 
     def ensure_files(self) -> None:
         if sys.platform != "win32":
@@ -153,6 +164,77 @@ class PiperTTS:
     def _proc_alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None and self._json_input
 
+    def _start_readers(self, proc: subprocess.Popen) -> None:
+        """Drain stdout and stderr so a full pipe cannot stall Piper."""
+        self._reader_gen += 1
+        gen = self._reader_gen
+        lines = self._stdout_q
+
+        def _read_stdout() -> None:
+            stream = proc.stdout
+            if stream is None:
+                return
+            try:
+                while gen == self._reader_gen:
+                    raw = stream.readline()
+                    if not raw:
+                        break
+                    lines.put(raw.decode("utf-8", errors="replace"))
+            except Exception:
+                log.debug("piper stdout reader stopped", exc_info=True)
+
+        def _read_stderr() -> None:
+            stream = proc.stderr
+            if stream is None:
+                return
+            try:
+                while gen == self._reader_gen:
+                    raw = stream.readline()
+                    if not raw:
+                        break
+                    line = raw.decode("utf-8", errors="replace").rstrip()
+                    if line:
+                        log.debug("piper: %s", line[:500])
+            except Exception:
+                log.debug("piper stderr reader stopped", exc_info=True)
+
+        for target in (_read_stdout, _read_stderr):
+            threading.Thread(target=target, name="piper-pipe", daemon=True).start()
+
+    def _fail_persistent(self, proc: subprocess.Popen | None, reason: str) -> None:
+        log.warning("%s; retrying persistent Piper in %.0fs", reason, self._json_retry_after)
+        self._json_input = False
+        self._json_retry_at = time.monotonic() + self._json_retry_after
+        if proc is not None and proc is self._proc:
+            self.close()
+        elif proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    def _maybe_retry_persistent(self) -> None:
+        if self._json_input or not self._json_retry_at:
+            return
+        if time.monotonic() >= self._json_retry_at:
+            log.info("Retrying persistent Piper")
+            self._json_input = True
+
+    def _output_ready(self, line: str, out_path: str) -> bool:
+        text = (line or "").strip()
+        if not text:
+            return False
+        if out_path in text:
+            return True
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(data, dict):
+            return False
+        reported = str(data.get("output_file") or "")
+        return bool(reported) and (reported == out_path or out_path in reported)
+
     async def speak(self, text: str) -> None:
         text = (text or "").strip()
         if not text or not self.settings.tts_enabled or self.settings.tts_mute:
@@ -177,6 +259,7 @@ class PiperTTS:
         text = (text or "").strip()[: self.settings.max_sentence_chars]
         if not text:
             return np.zeros(0, dtype=np.float32), self.sample_rate
+        self._maybe_retry_persistent()
         if self._json_input:
             audio = self._synth_persistent(text)
             if audio is not None:
@@ -185,10 +268,13 @@ class PiperTTS:
 
     def _synth_persistent(self, text: str) -> tuple[np.ndarray, int] | None:
         if not self._proc_alive():
+            self._stdout_q = queue.Queue()
             self._proc = self._spawn()
+            if self._proc is not None:
+                self._start_readers(self._proc)
         proc = self._proc
         if proc is None or proc.stdin is None:
-            self._json_input = False
+            self._fail_persistent(proc, "Piper json-input did not start")
             return None
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             out_path = tmp.name
@@ -198,35 +284,42 @@ class PiperTTS:
             proc.stdin.flush()
         except Exception as e:
             log.warning("Piper stdin failed (%s); falling back to one-shot", e)
-            self._json_input = False
-            self.close()
+            self._fail_persistent(proc, "Piper stdin failed")
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
             return None
-        deadline = time.time() + 25
-        while time.time() < deadline:
+        deadline = time.monotonic() + self._persistent_timeout
+        while time.monotonic() < deadline:
             if self._cancel.is_set():
+                try:
+                    os.unlink(out_path)
+                except OSError:
+                    pass
                 return np.zeros(0, dtype=np.float32), self.sample_rate
             if proc.poll() is not None:
-                err = ""
-                if proc.stderr:
-                    err = proc.stderr.read().decode("utf-8", errors="replace")[:300]
-                log.warning("Piper json-input exited (%s); using one-shot", err or proc.returncode)
-                self._json_input = False
                 self._proc = None
+                self._fail_persistent(None, f"Piper json-input exited ({proc.returncode})")
+                try:
+                    os.unlink(out_path)
+                except OSError:
+                    pass
                 return None
-            if os.path.exists(out_path) and os.path.getsize(out_path) > 44:
-                time.sleep(0.05)
-                if os.path.getsize(out_path) > 44:
-                    try:
-                        return self._read_wav(out_path)
-                    finally:
-                        try:
-                            os.unlink(out_path)
-                        except OSError:
-                            pass
-            time.sleep(0.02)
-        log.warning("Piper json-input timed out; using one-shot")
-        self._json_input = False
-        self.close()
+            try:
+                line = self._stdout_q.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if not self._output_ready(line, out_path):
+                continue
+            try:
+                return self._read_wav(out_path)
+            finally:
+                try:
+                    os.unlink(out_path)
+                except OSError:
+                    pass
+        self._fail_persistent(proc, "Piper json-input timed out")
         try:
             os.unlink(out_path)
         except OSError:
