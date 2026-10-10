@@ -104,6 +104,10 @@ chat:
   welcome_first_time: true
   # Gap between mod !pixel mute/unmute/chill/hype/stop commands.
   control_cooldown_seconds: 4
+  # When true, !ask waits in the Questions list instead of being answered immediately.
+  ask_queue: false
+  # Gap between mod !pixel clip commands.
+  clip_cooldown_seconds: 60
 
 memory:
   chat_context_lines: 20
@@ -125,6 +129,10 @@ events:
   hype_train: false
   polls: false
   predictions: false
+  ad_breaks: false
+  shoutouts: false
+  # On stream.offline, stop the mic and mark the booth idle.
+  idle_on_offline: true
   channel_point_rewards:
     hydrate: speak
     # A reward can also be a mapping. {user} and {input} are filled in, and input is fenced.

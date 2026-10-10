@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime
 
 from src.llm.persona import (
     mood_temperature,
@@ -44,12 +45,35 @@ async def on_stream_event(orch, event: StreamEvent) -> None:
         }
     )
     await orch.hub.broadcast({"type": "log", "data": f"Alert {event.kind}: {event.scene()}"})
+    if event.kind in ("hype_progress", "hype_begin", "hype_end"):
+        await _broadcast_hype(orch, event)
+        if event.kind == "hype_progress":
+            return
+    if event.kind == "stream_online":
+        session = orch.memory.start_session()
+        await orch.hub.broadcast({"type": "log", "data": f"Session {session}"})
+        return
+    if event.kind == "stream_offline":
+        moment = datetime.now()
+        _text, path = write_recap(
+            orch.memory,
+            orch.data_dir / "recaps",
+            when=moment,
+            filename=f"{moment:%Y-%m-%d-%H%M}.md",
+        )
+        await orch.hub.broadcast({"type": "log", "data": f"Recap {path.name}"})
+        if orch.settings.idle_on_offline:
+            await orch.set_listen(False)
+        return
+    if event.kind == "ad_break":
+        await orch.say_line(event.scene(), post_chat=True, speak=False)
+        return
+    if event.kind in ("shoutout_in", "shoutout_out", "raid_out"):
+        await orch.say_line(event.scene(), post_chat=True, speak=bool(orch.settings.events_speak))
+        return
     if event.kind == "raid":
         orch._last_raider = event.user
         orch._last_raider_id = str(event.extra.get("from_id") or "")
-    if event.kind == "hype_progress":
-        await orch.hub.patch_status(hype_level=event.extra.get("level"))
-        return
     if event.kind == "redeem":
         title = str(event.extra.get("title") or "")
         spec = orch.settings.reward_spec(title)
@@ -79,6 +103,25 @@ async def on_stream_event(orch, event: StreamEvent) -> None:
         return
     orch._event_pending.append(event)
     orch._kick_events()
+
+
+def _hype_message(orch, event: StreamEvent) -> dict:
+    extra = event.extra or {}
+    return {
+        "level": extra.get("level") or 1,
+        "progress": extra.get("progress") or 0,
+        "goal": extra.get("goal") or 0,
+        "total": extra.get("total") or 0,
+        "expires_at": extra.get("expires_at") or "",
+        "active": event.kind != "hype_end",
+        "hold_seconds": orch.settings.overlay_alert_hold,
+    }
+
+
+async def _broadcast_hype(orch, event: StreamEvent) -> None:
+    payload = _hype_message(orch, event)
+    await orch.hub.broadcast({"type": "hype", "data": payload})
+    await orch.hub.patch_status(hype=payload, hype_level=payload["level"])
 
 
 async def _flush_follows(orch) -> None:

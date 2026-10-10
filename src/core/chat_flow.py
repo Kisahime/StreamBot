@@ -190,6 +190,13 @@ def _control_ready(orch) -> bool:
     return time.monotonic() - orch._last_control_at >= wait
 
 
+def _clip_ready(orch) -> bool:
+    wait = orch.settings.clip_cooldown_seconds
+    if wait <= 0:
+        return True
+    return time.monotonic() - orch._last_clip_at >= wait
+
+
 async def _type_ack(orch, text: str) -> None:
     if orch.twitch and orch.twitch.connected:
         await orch.twitch.send(text)
@@ -225,6 +232,17 @@ async def _consider_chat_locked(orch) -> bool:
     target = orch._pick_chat_target()
     if target is None:
         return False
+    if orch.settings.ask_queue and (target.command or "").lower() == "!ask":
+        asks = [line for line in orch._chat_pending if (line.command or "").lower() == "!ask"]
+        chosen = asks[0] if asks else target
+        kept = [line for line in orch._chat_pending if line is not chosen]
+        orch._chat_pending.clear()
+        orch._chat_pending.extend(kept)
+        if not chosen.id:
+            chosen.id = orch._next_qid()
+        orch._questions.append(chosen)
+        await orch._publish_queue()
+        return True
     if pixel_control(target, orch._control_names()):
         orch._drop_chat_target(target)
         await orch._publish_queue()
@@ -246,6 +264,18 @@ async def _perform_chat(orch, target: ChatLine, *, ignore_rate: bool) -> None:
     if verb:
         if not orch._can_run_mod_command(target):
             await orch._note_skip("not a mod", target.user)
+            return
+        if verb == "clip":
+            if not ignore_rate and not orch._clip_ready():
+                await orch._note_skip("clip cooldown", target.user)
+                return
+            try:
+                await orch.create_clip()
+            except Exception as e:
+                await orch.hub.broadcast({"type": "log", "data": f"Clip failed: {e}"})
+            else:
+                orch._last_clip_at = time.monotonic()
+            orch._mark_reply(target.user)
             return
         if not ignore_rate and (not orch._control_ready()):
             await orch._note_skip("control cooldown", target.user)
@@ -350,7 +380,8 @@ async def _decide_chat(orch, line: ChatLine, action: str) -> None:
     )
     if orch.twitch and orch.twitch.connected:
         try:
-            await orch.twitch.send(chat_text)
+            parent = "" if streamer else str(getattr(line, "msg_id", "") or "")
+            await orch.twitch.send(chat_text, reply_parent=parent)
         except Exception:
             log.exception("chat send failed")
     want_speak = (

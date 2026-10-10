@@ -196,6 +196,8 @@ class Settings:
         self.chat_max_age_seconds = float(_get(data, "chat.max_age_seconds", 45))
         self.welcome_first_time = bool(_get(data, "chat.welcome_first_time", False))
         self.control_cooldown_seconds = float(_get(data, "chat.control_cooldown_seconds", 4))
+        self.ask_queue = bool(_get(data, "chat.ask_queue", False))
+        self.clip_cooldown_seconds = float(_get(data, "chat.clip_cooldown_seconds", 60))
         self.ambient_chat_context = int(_get(data, "chat.ambient_context_lines", 6))
         self.allow_links = bool(_get(data, "safety.allow_links", False))
 
@@ -216,6 +218,9 @@ class Settings:
         self.hype_train_enabled = bool(_get(data, "events.hype_train", False))
         self.polls_enabled = bool(_get(data, "events.polls", False))
         self.predictions_enabled = bool(_get(data, "events.predictions", False))
+        self.ad_breaks_enabled = bool(_get(data, "events.ad_breaks", False))
+        self.shoutouts_enabled = bool(_get(data, "events.shoutouts", False))
+        self.idle_on_offline = bool(_get(data, "events.idle_on_offline", True))
         rewards = _get(data, "events.channel_point_rewards", {}) or {}
         self.channel_point_rewards = {
             str(key).strip().lower(): _reward_spec(value)
@@ -300,6 +305,17 @@ class Settings:
             subs.extend([("channel.poll.begin", "1"), ("channel.poll.end", "1")])
         if self.predictions_enabled:
             subs.extend([("channel.prediction.begin", "1"), ("channel.prediction.end", "1")])
+        if self.ad_breaks_enabled:
+            subs.append(("channel.ad_break.begin", "1"))
+        if self.shoutouts_enabled:
+            subs.extend(
+                [
+                    ("channel.shoutout.receive", "1"),
+                    ("channel.shoutout.create", "1"),
+                    ("channel.raid.out", "1"),
+                ]
+            )
+        subs.extend([("stream.online", "1"), ("stream.offline", "1")])
         return subs
 
 

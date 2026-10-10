@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from src.memory import STREAMER_THREAD, ConversationMemory
+from src.memory import ConversationMemory
 
 
 def _section(title: str, lines: list[str]) -> str:
@@ -11,13 +11,20 @@ def _section(title: str, lines: list[str]) -> str:
     return f"## {title}\n{body}"
 
 
+def _session_event(memory: ConversationMemory, event) -> bool:
+    return event.session_id == memory.session_id
+
+
 def build_recap(memory: ConversationMemory, *, vibe: str = "", when: datetime | None = None) -> str:
-    """Deterministic Markdown recap. ``vibe`` is an optional one-paragraph line."""
+    """Deterministic Markdown recap for the current session. ``vibe`` is optional."""
     follows: list[str] = []
     subs: list[str] = []
     raids: list[str] = []
+    cheers: list[str] = []
+    redeems: list[str] = []
+    polls: list[str] = []
     for event in memory.events:
-        if event.kind != "twitch_event":
+        if event.kind != "twitch_event" or not _session_event(memory, event):
             continue
         text = (event.text or "").strip()
         if not text:
@@ -29,20 +36,32 @@ def build_recap(memory: ConversationMemory, *, vibe: str = "", when: datetime | 
             subs.append(text)
         elif "follow" in low:
             follows.append(text)
+        elif "cheer" in low or "bits" in low:
+            cheers.append(text)
+        elif "redeem" in low:
+            redeems.append(text)
+        elif "poll" in low or "prediction" in low:
+            polls.append(text)
 
-    chatters: list[tuple[int, str]] = []
+    counts: dict[str, tuple[int, str]] = {}
+    for event in memory.events:
+        if event.kind != "viewer" or not _session_event(memory, event):
+            continue
+        name = (event.user or "").strip()
+        if not name:
+            continue
+        count, shown = counts.get(name.lower(), (0, name))
+        counts[name.lower()] = (count + 1, shown)
+    chatters = sorted(counts.values(), key=lambda item: (-item[0], item[1].lower()))
+    chatter_lines = [f"{name} — {count} message{'s' if count != 1 else ''}" for count, name in chatters[:8]]
+
     moments: list[str] = []
     for key, viewer in memory.viewers.items():
-        if viewer.notes:
-            who = viewer.name or key
-            for note in viewer.notes:
-                moments.append(f"{who}: {note}")
-        if key == STREAMER_THREAD or viewer.is_streamer:
+        if not viewer.notes:
             continue
-        if viewer.messages:
-            chatters.append((viewer.messages, viewer.name or key))
-    chatters.sort(key=lambda item: (-item[0], item[1].lower()))
-    chatter_lines = [f"{name} — {count} message{'s' if count != 1 else ''}" for count, name in chatters[:8]]
+        who = viewer.name or key
+        for note in viewer.notes:
+            moments.append(f"{who}: {note}")
 
     stamp = (when or datetime.now()).strftime("%Y-%m-%d")
     parts = [
@@ -53,6 +72,12 @@ def build_recap(memory: ConversationMemory, *, vibe: str = "", when: datetime | 
         _section("Top chatters", chatter_lines),
         _section("Noted moments", moments),
     ]
+    if cheers:
+        parts.append(_section("Cheers", cheers))
+    if redeems:
+        parts.append(_section("Redeems", redeems))
+    if polls:
+        parts.append(_section("Polls", polls))
     paragraph = (vibe or "").strip()
     if paragraph:
         parts.append(f"## Vibe\n{paragraph}")
@@ -65,10 +90,12 @@ def write_recap(
     *,
     vibe: str = "",
     when: datetime | None = None,
+    filename: str | None = None,
 ) -> tuple[str, Path]:
     moment = when or datetime.now()
     text = build_recap(memory, vibe=vibe, when=moment)
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{moment:%Y-%m-%d}.md"
+    name = Path(filename).name if filename else f"{moment:%Y-%m-%d}.md"
+    path = directory / name
     path.write_text(text, encoding="utf-8")
     return text, path

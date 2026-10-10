@@ -119,6 +119,19 @@ class StreamEvent:
             return f"A prediction just opened: {extra.get('title') or 'a prediction'}."
         if self.kind == "prediction_end":
             return _outcome_scene("Prediction", extra, "a prediction")
+        if self.kind == "ad_break":
+            seconds = extra.get("seconds") or 0
+            return f"ad break, back in {seconds} seconds"
+        if self.kind == "shoutout_in":
+            return f"Thanks {self.user or 'them'} for the shoutout."
+        if self.kind == "shoutout_out":
+            return f"Just shouted out {self.user or 'them'}."
+        if self.kind == "raid_out":
+            return f"Thanks for hanging out. We're heading over to {self.user or 'another channel'}."
+        if self.kind == "stream_online":
+            return "Stream is live."
+        if self.kind == "stream_offline":
+            return "Stream is offline."
         return f"{self.kind}: {self.user}"
 
 
@@ -516,14 +529,19 @@ class EventSubClient:
                 log.info("Skipping %s: missing scope %s", stype, scope)
                 return None
             async with sem:
+                real = "channel.raid" if stype == "channel.raid.out" else stype
                 if stype == "channel.follow":
+                    condition = {"broadcaster_user_id": broadcaster_id, "moderator_user_id": moderator_id}
+                elif stype in ("channel.shoutout.receive", "channel.shoutout.create"):
                     condition = {"broadcaster_user_id": broadcaster_id, "moderator_user_id": moderator_id}
                 elif stype == "channel.raid":
                     condition = {"to_broadcaster_user_id": broadcaster_id}
+                elif stype == "channel.raid.out":
+                    condition = {"from_broadcaster_user_id": broadcaster_id}
                 else:
                     condition = {"broadcaster_user_id": broadcaster_id}
                 body = {
-                    "type": stype,
+                    "type": real,
                     "version": version,
                     "condition": condition,
                     "transport": {"method": "websocket", "session_id": session_id},
@@ -532,7 +550,7 @@ class EventSubClient:
             if response.status_code in (200, 202, 409):
                 self._note_feed(stype, "ok")
                 return None
-            message = f"{stype}: {_helix_err('subscribe', response)}"
+            message = f"{real}: {_helix_err('subscribe', response)}"
             self._note_feed(stype, f"HTTP {response.status_code} {message}"[:180])
             return message
 
@@ -558,7 +576,14 @@ def _helix_err(what: str, resp: httpx.Response) -> str:
 
 def _hype_extra(event: dict[str, Any]) -> dict[str, Any]:
     train = str(event.get("type") or "").replace("_", " ").strip()
-    return {"level": event.get("level") or 1, "train": train}
+    return {
+        "level": event.get("level") or 1,
+        "train": train,
+        "progress": event.get("progress") or 0,
+        "goal": event.get("goal") or 0,
+        "total": event.get("total") or 0,
+        "expires_at": event.get("expires_at") or "",
+    }
 
 
 def _quiet_status(event: dict[str, Any]) -> bool:
@@ -669,8 +694,17 @@ def _parse_notification(stype: str, event: dict[str, Any], channel: str = "") ->
         )
     if stype == "channel.raid":
         from_login = str(event.get("from_broadcaster_user_login") or "").lower()
+        viewers = event.get("viewers")
         if channel and from_login == channel.lower():
-            return None
+            return StreamEvent(
+                kind="raid_out",
+                user=str(event.get("to_broadcaster_user_name") or event.get("to_broadcaster_user_login") or ""),
+                extra={
+                    "viewers": viewers,
+                    "to_id": event.get("to_broadcaster_user_id") or "",
+                    "to_login": event.get("to_broadcaster_user_login") or "",
+                },
+            )
         return StreamEvent(
             kind="raid",
             user=user,
@@ -712,4 +746,22 @@ def _parse_notification(stype: str, event: dict[str, Any], channel: str = "") ->
         if _quiet_status(event):
             return None
         return StreamEvent(kind="prediction_end", user="chat", extra=_prediction_extra(event))
+    if stype == "channel.ad_break.begin":
+        return StreamEvent(
+            kind="ad_break",
+            user="chat",
+            extra={"seconds": _as_int(event.get("duration_seconds") or event.get("duration"))},
+        )
+    if stype == "channel.shoutout.receive":
+        who = str(event.get("from_broadcaster_user_name") or event.get("from_broadcaster_user_login") or "")
+        return StreamEvent(kind="shoutout_in", user=who, extra={"viewers": event.get("viewer_count") or 0})
+    if stype == "channel.shoutout.create":
+        who = str(event.get("to_broadcaster_user_name") or event.get("to_broadcaster_user_login") or "")
+        return StreamEvent(kind="shoutout_out", user=who, extra={"viewers": event.get("viewer_count") or 0})
+    if stype == "stream.online":
+        who = str(event.get("broadcaster_user_name") or event.get("broadcaster_user_login") or "")
+        return StreamEvent(kind="stream_online", user=who)
+    if stype == "stream.offline":
+        who = str(event.get("broadcaster_user_name") or event.get("broadcaster_user_login") or "")
+        return StreamEvent(kind="stream_offline", user=who)
     return None

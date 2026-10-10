@@ -76,7 +76,7 @@ def test_dashboard_routes_round_trip(tmp_path, settings, monkeypatch):
         assert "oauth:" not in health.text
         assert client.get("/api/devices").status_code == 200
         assert client.get("/api/devices?refresh=1").status_code == 200
-        assert client.get("/api/queue").json() == {"chat": [], "alerts": []}
+        assert client.get("/api/queue").json() == {"chat": [], "alerts": [], "questions": []}
         assert client.get("/api/tts/voices").json()["current"] == settings.tts_voice
         assert client.get("/api/persona").status_code == 200
         assert client.get("/api/streamer").json()["spoken_name"]

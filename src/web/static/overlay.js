@@ -9,9 +9,19 @@ document.body.dataset.theme = q.get("theme") || "";
 document.body.dataset.position = q.get("position") || "bottom";
 const hideIdle = q.get("hide") === "idle";
 const alertsOff = q.get("alerts") === "0";
+const hypeOff = q.get("hype") === "0";
+const askOff = q.get("ask") === "0";
+const hypeEl = document.getElementById("hype");
+const hypeBar = document.getElementById("hypeBar");
+const hypeLabel = document.getElementById("hypeLabel");
+const adEl = document.getElementById("ad");
+const questionEl = document.getElementById("question");
 let holdMs = Math.max(1, Number(q.get("hold") || 6)) * 1000;
 let alertTimer = 0;
 let typeTimer = 0;
+let hypeTimer = 0;
+let hypeTick = 0;
+let adTimer = 0;
 const fontSize = Number(q.get("fontsize"));
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
@@ -68,6 +78,69 @@ function setCaption(text, speaking) {
   }, 18);
 }
 
+function hideHype() {
+  if (hypeEl) hypeEl.hidden = true;
+  clearInterval(hypeTick);
+}
+
+function showHype(data) {
+  if (hypeOff || !hypeEl || !data) return;
+  const hold = Math.max(1, Number(data.hold_seconds || holdMs / 1000)) * 1000;
+  if (data.active === false) {
+    clearTimeout(hypeTimer);
+    hypeTimer = setTimeout(hideHype, hold);
+    return;
+  }
+  clearTimeout(hypeTimer);
+  hypeEl.hidden = false;
+  const progress = Number(data.progress) || 0;
+  const goal = Number(data.goal) || 0;
+  const pct = goal > 0 ? Math.max(0, Math.min(100, (progress / goal) * 100)) : 0;
+  if (hypeBar) hypeBar.style.width = `${pct}%`;
+  const level = data.level || 1;
+  const tick = () => {
+    let left = "";
+    if (data.expires_at) {
+      const end = Date.parse(data.expires_at);
+      if (!Number.isNaN(end)) left = ` · ${Math.max(0, Math.round((end - Date.now()) / 1000))}s`;
+    }
+    if (hypeLabel) hypeLabel.textContent = `Hype level ${level}${left}`;
+  };
+  tick();
+  clearInterval(hypeTick);
+  hypeTick = setInterval(tick, 1000);
+}
+
+function showAd(seconds) {
+  if (!adEl) return;
+  let left = Math.max(0, Number(seconds) || 0);
+  adEl.hidden = false;
+  const tick = () => {
+    adEl.textContent = `Ad break, back in ${left} seconds`;
+    if (left <= 0) {
+      clearInterval(adTimer);
+      return;
+    }
+    left -= 1;
+  };
+  tick();
+  clearInterval(adTimer);
+  adTimer = setInterval(tick, 1000);
+}
+
+function showQuestion(data) {
+  if (askOff || !questionEl) return;
+  const text = (data && data.text) || "";
+  if (!text) {
+    questionEl.hidden = true;
+    questionEl.textContent = "";
+    return;
+  }
+  questionEl.hidden = false;
+  const user = (data && data.user) || "";
+  questionEl.textContent = user ? `${user}: ${text}` : text;
+}
+
 function applyOverlayMessage(raw) {
   let msg;
   try {
@@ -86,11 +159,21 @@ function applyOverlayMessage(raw) {
     if (st.speaking) nameEl.classList.add("speaking");
     else nameEl.classList.remove("speaking");
     if (typeof st.caption === "string") setCaption(st.caption, !!st.speaking);
+    if (st.hype) showHype(st.hype);
+    if (st.queue && st.queue.questions) showQuestion(st.queue.questions[0] || {});
+  } else if (msg.type === "hype") {
+    showHype(msg.data || {});
+  } else if (msg.type === "question") {
+    showQuestion(msg.data || {});
   } else if (msg.type === "transcript" && msg.data && msg.data.role === "cohost") {
     setCaption(msg.data.text || "", true);
   } else if (msg.type === "alert") {
     const d = msg.data || {};
     showAlert(d.text || `${d.kind || "alert"} ${d.user || ""}`.trim(), d.kind || "alert");
+    if (d.kind === "ad_break") {
+      const match = /(\d+)/.exec(d.text || "");
+      showAd(match ? Number(match[1]) : 0);
+    }
   }
 }
 

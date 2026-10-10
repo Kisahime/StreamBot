@@ -28,6 +28,12 @@ SUBSCRIPTION_SCOPES: dict[str, tuple[str, ...]] = {
     "channel.poll.end": ("channel:read:polls", "channel:manage:polls"),
     "channel.prediction.begin": ("channel:read:predictions", "channel:manage:predictions"),
     "channel.prediction.end": ("channel:read:predictions", "channel:manage:predictions"),
+    "channel.ad_break.begin": ("channel:read:ads",),
+    "channel.shoutout.receive": ("moderator:read:shoutouts",),
+    "channel.shoutout.create": ("moderator:read:shoutouts",),
+    "stream.online": (),
+    "stream.offline": (),
+    "channel.raid.out": (),
 }
 
 TYPE_TO_FEED: dict[str, str] = {
@@ -45,6 +51,12 @@ TYPE_TO_FEED: dict[str, str] = {
     "channel.poll.end": "polls",
     "channel.prediction.begin": "predictions",
     "channel.prediction.end": "predictions",
+    "channel.ad_break.begin": "ad_breaks",
+    "channel.shoutout.receive": "shoutouts",
+    "channel.shoutout.create": "shoutouts",
+    "channel.raid.out": "shoutouts",
+    "stream.online": "stream",
+    "stream.offline": "stream",
 }
 
 FEED_ORDER = (
@@ -58,11 +70,14 @@ FEED_ORDER = (
     "hype_train",
     "polls",
     "predictions",
+    "ad_breaks",
+    "shoutouts",
 )
 
 ACTION_SCOPES: dict[str, tuple[str, ...]] = {
     "shoutout": ("moderator:manage:shoutouts",),
     "marker": ("channel:manage:broadcast",),
+    "clip": ("clips:edit",),
 }
 
 
@@ -95,6 +110,8 @@ CORE_TYPES = (
     "channel.subscription.gift",
     "channel.subscription.message",
     "channel.raid",
+    "stream.online",
+    "stream.offline",
 )
 
 

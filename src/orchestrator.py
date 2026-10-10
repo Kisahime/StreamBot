@@ -9,7 +9,7 @@ from src.core import chat_flow, event_flow, lifecycle, queue, twitch_link, voice
 from src.core.event_flow import EVENT_PRIORITY
 from src.core.twitch_link import TOKEN_REVALIDATE_SECONDS
 from src.settings import ROOT, update_config
-from src.twitch.helix import create_marker, shoutout, user_id
+from src.twitch.helix import create_clip, create_marker, shoutout, user_id
 
 log = logging.getLogger("cohost.orch")
 
@@ -18,6 +18,7 @@ __all__ = [
     "Orchestrator",
     "ROOT",
     "TOKEN_REVALIDATE_SECONDS",
+    "create_clip",
     "create_marker",
     "shoutout",
     "update_config",
@@ -297,6 +298,9 @@ class Orchestrator:
     def _control_ready(self):
         return chat_flow._control_ready(self)
 
+    def _clip_ready(self):
+        return chat_flow._clip_ready(self)
+
     async def _type_ack(self, text):
         return await chat_flow._type_ack(self, text)
 
@@ -333,6 +337,12 @@ class Orchestrator:
     async def mark_moment(self, note):
         return await twitch_link.mark_moment(self, note)
 
+    async def create_clip(self):
+        return await twitch_link.create_clip(self)
+
+    async def edit_note(self, login, text, op="add", pinned=None):
+        return await lifecycle.edit_note(self, login, text, op, pinned)
+
     async def _note_skip(self, reason, user):
         return await lifecycle._note_skip(self, reason, user)
 
@@ -347,6 +357,9 @@ class Orchestrator:
 
     def _retain_events(self, kept):
         return queue._retain_events(self, kept)
+
+    def _retain_questions(self, kept):
+        return queue._retain_questions(self, kept)
 
     def queue_snapshot(self):
         return queue.queue_snapshot(self)

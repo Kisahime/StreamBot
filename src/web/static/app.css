@@ -121,6 +121,12 @@ button.held { background: #3a2218; border-color: #ffb38a; }
 .person-row { display: flex; gap: 6px; align-items: stretch; }
 .person-row .person { flex: 1; }
 button.forget { flex: none; padding: 8px 10px; font-size: 12px; }
+.notes { display: flex; flex-direction: column; gap: 4px; margin: 0 0 8px; }
+.note-row { display: flex; gap: 6px; align-items: center; }
+.note-row span { flex: 1; font-size: 13px; }
+.hype-meter { margin: 0 0 10px; }
+.hype-track { height: 8px; border-radius: 99px; background: #1c2430; overflow: hidden; }
+.hype-bar { height: 100%; width: 0; background: #f0c674; }
 .person {
   text-align: left;
   border: 1px solid var(--line);

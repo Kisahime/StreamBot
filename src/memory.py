@@ -239,6 +239,7 @@ class Event:
     text: str
     via: str = "chat"
     thread: str = ""
+    session_id: str = ""
 
     def line(self) -> str:
         stamp = time.strftime("%H:%M:%S", time.localtime(self.ts))
@@ -283,6 +284,7 @@ class Viewer:
     is_streamer: bool = False
     greeted: bool = False
     greeted_session: str = ""
+    pinned: bool = False
 
 
 STREAMER_THREAD = "streamer"
@@ -304,7 +306,9 @@ class ConversationMemory:
         self.viewer_limit = viewer_limit
         self.thread_turns = thread_turns
         self.retention_days = retention_days
+        self._keep_session_id = session_id is not None
         self.session_id = session_id or secrets.token_hex(8)
+        self.session_started = time.time()
         self.events: deque[Event] = deque(maxlen=event_limit)
         self.viewers: dict[str, Viewer] = {}
         self.threads: dict[str, deque[Turn]] = {}
@@ -367,6 +371,14 @@ class ConversationMemory:
                 except Exception:
                     continue
             self.threads[key] = dq
+        if not self._keep_session_id and data.get("session_id"):
+            self.session_id = str(data.get("session_id") or self.session_id)
+        started = data.get("session_started")
+        if started:
+            try:
+                self.session_started = float(started)
+            except (TypeError, ValueError):
+                pass
 
     def save(self) -> None:
         self.dirty = True
@@ -380,6 +392,8 @@ class ConversationMemory:
             "events": [asdict(e) for e in self.events],
             "viewers": {k: asdict(v) for k, v in self.viewers.items()},
             "threads": {k: [asdict(t) for t in turns] for k, turns in self.threads.items()},
+            "session_id": self.session_id,
+            "session_started": self.session_started,
         }
         raw = json.dumps(payload, ensure_ascii=False, indent=2)
         tmp = self.path.with_suffix(".json.tmp")
@@ -421,6 +435,39 @@ class ConversationMemory:
         self.viewers[key] = viewer
         self.save()
 
+    def remove_note(self, key: str, note: str) -> bool:
+        viewer = self.viewers.get(key)
+        if viewer is None:
+            return False
+        target = (note or "").strip()
+        kept = [item for item in viewer.notes if item != target]
+        if len(kept) == len(viewer.notes):
+            return False
+        viewer.notes = kept
+        self.viewers[key] = viewer
+        self.save()
+        return True
+
+    def set_pinned(self, key: str, pinned: bool) -> None:
+        viewer = self.viewers.get(key)
+        if viewer is None:
+            viewer = Viewer(name=self.streamer_display if key == STREAMER_THREAD else key, is_streamer=key == STREAMER_THREAD)
+        viewer.pinned = bool(pinned)
+        viewer.last_ts = viewer.last_ts or time.time()
+        self.viewers[key] = viewer
+        self.save()
+
+    def start_session(self) -> str:
+        """Rotate the session id. Blank event ids stay with the session that just ended."""
+        previous = self.session_id
+        for event in self.events:
+            if not event.session_id:
+                event.session_id = previous
+        self.session_id = secrets.token_hex(8)
+        self.session_started = time.time()
+        self.save()
+        return self.session_id
+
     def _maybe_note(self, key: str, text: str) -> None:
         if not NOTE_RE.search(text or ""):
             return
@@ -454,7 +501,15 @@ class ConversationMemory:
                 thread = self.viewer_thread_key(user)
             else:
                 thread = STREAMER_THREAD
-        ev = Event(ts=time.time(), kind=kind, user=user, text=text, via=via, thread=thread)
+        ev = Event(
+            ts=time.time(),
+            kind=kind,
+            user=user,
+            text=text,
+            via=via,
+            thread=thread,
+            session_id=self.session_id,
+        )
         self.events.append(ev)
 
         if kind.startswith("streamer"):
@@ -559,6 +614,8 @@ class ConversationMemory:
             else:
                 self.threads.pop(key, None)
         for key, viewer in list(self.viewers.items()):
+            if viewer.pinned:
+                continue
             if viewer.last_ts and viewer.last_ts < cutoff:
                 self.viewers.pop(key, None)
                 removed += 1
@@ -684,15 +741,17 @@ class ConversationMemory:
             "last_reply": v.last_reply,
             "greeted": self.is_greeted(v),
             "notes": list(v.notes),
+            "pinned": bool(v.pinned),
             "thread": turns,
         }
 
     def _trim_viewers(self) -> None:
-        extras = {k: v for k, v in self.viewers.items() if k != STREAMER_THREAD}
-        if len(extras) <= self.viewer_limit:
+        extras = {k: v for k, v in self.viewers.items() if k != STREAMER_THREAD and not v.pinned}
+        pinned = sum(1 for v in self.viewers.values() if v.pinned and not v.is_streamer)
+        if len(extras) + pinned <= self.viewer_limit:
             return
         ranked = sorted(extras.items(), key=lambda kv: kv[1].last_ts)
-        drop = len(extras) - self.viewer_limit
+        drop = len(extras) + pinned - self.viewer_limit
         for key, _ in ranked[:drop]:
             self.viewers.pop(key, None)
             self.threads.pop(self.viewer_thread_key(key), None)

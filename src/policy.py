@@ -3,7 +3,7 @@ from __future__ import annotations
 from src.twitch.chat import ChatLine
 
 SPEAK_COMMANDS = {"!pixel", "!ask"}
-CONTROL_VERBS = {"mute", "unmute", "chill", "hype", "stop"}
+CONTROL_VERBS = {"mute", "unmute", "chill", "hype", "stop", "clip"}
 
 
 def control_command_names(persona_name: str = "", configured: str = "") -> set[str]:

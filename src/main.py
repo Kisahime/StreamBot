@@ -97,6 +97,13 @@ class ForgetBody(BaseModel):
     login: str = ""
 
 
+class NoteBody(BaseModel):
+    login: str = ""
+    text: str = ""
+    op: str = "add"
+    pinned: bool | None = None
+
+
 class IdBody(BaseModel):
     id: str = ""
 
@@ -383,9 +390,22 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
         app.state.orch.forget_viewer(body.login)
         return {"ok": True}
 
+    @app.post("/api/memory/note")
+    async def memory_note(body: NoteBody):
+        snap = await app.state.orch.edit_note(body.login, body.text, body.op, body.pinned)
+        return {"ok": True, "memory": snap}
+
     @app.post("/api/marker")
     async def marker(body: MarkerBody):
         result = await app.state.orch.mark_moment(body.note)
+        return {"ok": True, **result}
+
+    @app.post("/api/clip")
+    async def clip():
+        try:
+            result = await app.state.orch.create_clip()
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
         return {"ok": True, **result}
 
     @app.post("/api/twitch/connect")

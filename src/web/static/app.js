@@ -193,6 +193,12 @@ $("markerBtn").addEventListener("click", async () => {
   hint.textContent = data.marker_error ? `Noted. Marker: ${data.marker_error}` : "Moment noted.";
 });
 
+$("clipBtn").addEventListener("click", async () => {
+  const data = await post("/api/clip", {});
+  if (failed(data)) return;
+  hint.textContent = data.edit_url ? `Clip ${data.edit_url}` : "Clip created.";
+});
+
 personaBtn.addEventListener("click", async () => {
   const data = await post("/api/persona/reload", {});
   if (failed(data)) return;
@@ -299,7 +305,61 @@ function renderPeople(snap) {
       row.appendChild(forget);
     }
     peopleList.appendChild(row);
+    peopleList.appendChild(renderNotes(p));
   }
+}
+
+function noteLogin(person) {
+  return person.is_streamer ? "streamer" : (person.name || "");
+}
+
+function renderNotes(person) {
+  const box = document.createElement("div");
+  box.className = "notes";
+  for (const note of person.notes || []) {
+    const line = document.createElement("div");
+    line.className = "note-row";
+    line.appendChild(el("span", "", note));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      const data = await post("/api/memory/note", { login: noteLogin(person), text: note, op: "remove" });
+      if (failed(data)) return;
+      if (data.memory) renderMemory(data.memory);
+    });
+    line.appendChild(remove);
+    box.appendChild(line);
+  }
+  const pin = document.createElement("button");
+  pin.type = "button";
+  pin.textContent = person.pinned ? "Unpin" : "Pin";
+  pin.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    const data = await post("/api/memory/note", {
+      login: noteLogin(person),
+      text: "",
+      op: "add",
+      pinned: !person.pinned,
+    });
+    if (failed(data)) return;
+    if (data.memory) renderMemory(data.memory);
+  });
+  const add = document.createElement("input");
+  add.type = "text";
+  add.placeholder = "Add a note";
+  add.addEventListener("keydown", async (ev) => {
+    if (ev.key !== "Enter") return;
+    const text = add.value.trim();
+    if (!text) return;
+    const data = await post("/api/memory/note", { login: noteLogin(person), text, op: "add" });
+    if (failed(data)) return;
+    if (data.memory) renderMemory(data.memory);
+  });
+  box.appendChild(pin);
+  box.appendChild(add);
+  return box;
 }
 
 function renderThread(person) {
@@ -375,7 +435,7 @@ function renderSys(health) {
     }
   }
   const actions = twitch.actions || {};
-  for (const [id, key] of [["shoutoutBtn", "shoutout"], ["markerBtn", "marker"]]) {
+  for (const [id, key] of [["shoutoutBtn", "shoutout"], ["markerBtn", "marker"], ["clipBtn", "clip"]]) {
     const btn = $(id);
     const state = String(actions[key] || "");
     const missing = state.startsWith("missing scope");
@@ -447,6 +507,35 @@ function renderSys(health) {
   if (health.duck && health.duck.note) $("duckNote").textContent = health.duck.note;
 }
 
+let hypeHide = 0;
+
+function renderHype(data) {
+  const box = $("hypeMeter");
+  const bar = $("hypeBar");
+  const label = $("hypeLabel");
+  if (!box || !data) return;
+  const hold = Math.max(1, Number(data.hold_seconds || 6)) * 1000;
+  if (data.active === false) {
+    clearTimeout(hypeHide);
+    hypeHide = setTimeout(() => {
+      box.hidden = true;
+    }, hold);
+    return;
+  }
+  clearTimeout(hypeHide);
+  box.hidden = false;
+  const progress = Number(data.progress) || 0;
+  const goal = Number(data.goal) || 0;
+  const pct = goal > 0 ? Math.max(0, Math.min(100, (progress / goal) * 100)) : 0;
+  if (bar) bar.style.width = `${pct}%`;
+  let left = "";
+  if (data.expires_at) {
+    const end = Date.parse(data.expires_at);
+    if (!Number.isNaN(end)) left = ` · ${Math.max(0, Math.round((end - Date.now()) / 1000))}s`;
+  }
+  if (label) label.textContent = `Hype level ${data.level || 1}${left}`;
+}
+
 function queueButtons(id) {
   const drop = document.createElement("button");
   drop.type = "button";
@@ -474,9 +563,23 @@ function renderQueue(queue) {
   queueLog.textContent = "";
   const alerts = queue.alerts || [];
   const chat = queue.chat || [];
-  if (!alerts.length && !chat.length) {
+  const questions = queue.questions || [];
+  if (!alerts.length && !chat.length && !questions.length) {
     logLine(queueLog, "Queue is empty.");
     return;
+  }
+  if (questions.length) {
+    queueLog.appendChild(el("p", "hint", "Questions"));
+    for (const line of questions) {
+      const row = document.createElement("div");
+      row.className = "queue-row";
+      const text = document.createElement("p");
+      text.appendChild(el("span", "u", line.user || "?"));
+      text.appendChild(document.createTextNode(" " + (line.text || "")));
+      row.appendChild(text);
+      for (const button of queueButtons(line.id)) row.appendChild(button);
+      queueLog.appendChild(row);
+    }
   }
   for (const alert of alerts) {
     const row = document.createElement("div");
@@ -538,6 +641,7 @@ function applyStatus(st) {
     $("skipLine").textContent = `Skipped: ${st.skip.reason}${st.skip.user ? " · " + st.skip.user : ""}`;
   }
   if (st.queue) renderQueue(st.queue);
+  if (st.hype) renderHype(st.hype);
   if (st.mood && document.activeElement !== $("mood")) $("mood").value = st.mood;
   const postVoice = $("postVoice");
   if (postVoice && document.activeElement !== postVoice && typeof st.post_voice === "boolean") {
@@ -750,6 +854,8 @@ function connectWs() {
     } else if (msg.type === "skip") {
       const d = msg.data || {};
       $("skipLine").textContent = `Skipped: ${d.reason || ""}${d.user ? " · " + d.user : ""}`;
+    } else if (msg.type === "hype") {
+      renderHype(msg.data || {});
     } else if (msg.type === "log") {
       logLine(eventLog, String(msg.data || ""), "warn");
     }
