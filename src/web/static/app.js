@@ -16,6 +16,7 @@ const peopleList = $("peopleList");
 const phasePill = $("phasePill");
 const hint = $("hint");
 const sysList = $("sysList");
+const feedList = $("feedList");
 const lastUser = $("lastUser");
 const caption = $("caption");
 const chatLog = $("chatLog");
@@ -296,7 +297,7 @@ function renderSys(health) {
     ["VRAM", `${vram.profile || "snappy"} · warn ${vram.warn_mb || "?"} MB`],
     ["Ollama", ollama.ok ? `${ollama.model}${ollama.has_model ? "" : " (pull needed)"}` : (ollama.error || "down")],
     ["Whisper", whisper.loaded ? `${whisper.model} @ ${whisper.device}` : (whisper.error || "not loaded")],
-    ["Piper TTS", tts.ready ? "ready" : (tts.error || "not ready")],
+    ["Piper TTS", tts.ready ? `ready · ${tts.mode || "oneshot"}` : (tts.error || "not ready")],
     ["Duck", (health.duck && health.duck.mode) || "off"],
     ["Wake", health.wake && health.wake.enabled ? (health.wake.ready ? "ready" : (health.wake.reason || "off")) : "off"],
   ];
@@ -313,6 +314,13 @@ function renderSys(health) {
   if (hints.length && hint && !hint.dataset.lock) hint.textContent = hints[0];
   $("ircLine").textContent = `IRC: ${twitch.state || "disconnected"} · #${twitch.channel || "?"} as ${twitch.nick || "?"}`;
   $("eventLine").textContent = `EventSub: ${twitch.eventsub || "disconnected"}`;
+  if (feedList) {
+    feedList.textContent = "";
+    const feeds = twitch.feeds || {};
+    for (const name of Object.keys(feeds)) {
+      feedList.appendChild(el("li", "", `${name}: ${feeds[name]}`));
+    }
+  }
   const timings = health.timings || {};
   const bits = [];
   if (timings.stt_ms != null) bits.push(`STT ${timings.stt_ms} ms`);
