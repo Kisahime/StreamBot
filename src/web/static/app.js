@@ -369,6 +369,32 @@ function renderSys(health) {
   if (timings.chat_send_ms != null) bits.push(`chat ${timings.chat_send_ms} ms`);
   $("timingLine").textContent = bits.join(" · ");
   if (health.mood && document.activeElement !== $("mood")) $("mood").value = health.mood;
+  const profileSelect = $("profileSelect");
+  if (profileSelect) {
+    const names = health.profiles || [];
+    const sig = names.join("|");
+    if (profileSelect.dataset.names !== sig) {
+      profileSelect.dataset.names = sig;
+      profileSelect.textContent = "";
+      const blank = document.createElement("option");
+      blank.value = "";
+      blank.textContent = "config defaults";
+      profileSelect.appendChild(blank);
+      for (const name of names) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        profileSelect.appendChild(opt);
+      }
+    }
+    if (document.activeElement !== profileSelect) profileSelect.value = health.profile || "";
+  }
+  const runtime = health.runtime || {};
+  const profileLine = $("profileLine");
+  if (profileLine && runtime.mood) {
+    const spoken = runtime.events_speak ? "spoken" : "typed";
+    profileLine.textContent = `mood ${runtime.mood} · ${runtime.max_replies_per_minute} replies/min · cooldown ${runtime.cooldown_seconds}s · events ${spoken}`;
+  }
   if (health.language && document.activeElement !== $("langSelect")) $("langSelect").value = health.language;
   if (!devicesLoaded && health.devices) {
     const devices = health.devices;
@@ -399,6 +425,26 @@ function renderSys(health) {
   if (health.duck && health.duck.note) $("duckNote").textContent = health.duck.note;
 }
 
+function queueButtons(id) {
+  const drop = document.createElement("button");
+  drop.type = "button";
+  drop.textContent = "Drop";
+  drop.addEventListener("click", () => {
+    defPost("/api/queue/drop", { id }).then((data) => {
+      if (data.queue) renderQueue(data.queue);
+    }).catch((e) => { hint.textContent = String(e.message || e); });
+  });
+  const answer = document.createElement("button");
+  answer.type = "button";
+  answer.textContent = "Answer";
+  answer.addEventListener("click", () => {
+    defPost("/api/queue/answer", { id }).then((data) => {
+      if (data.queue) renderQueue(data.queue);
+    }).catch((e) => { hint.textContent = String(e.message || e); });
+  });
+  return [drop, answer];
+}
+
 function renderQueue(queue) {
   if (!queueLog || !queue) return;
   queueLog.textContent = "";
@@ -408,8 +454,26 @@ function renderQueue(queue) {
     logLine(queueLog, "Queue is empty.");
     return;
   }
-  for (const alert of alerts) logParts(queueLog, [{ cls: "alert", text: alert.kind || "alert" }, { text: " " + (alert.text || "") }]);
-  for (const line of chat) logParts(queueLog, [{ cls: "u", text: line.user || "?" }, { text: " " + (line.text || "") }]);
+  for (const alert of alerts) {
+    const row = document.createElement("div");
+    row.className = "queue-row";
+    const text = document.createElement("p");
+    text.appendChild(el("span", "alert", alert.kind || "alert"));
+    text.appendChild(document.createTextNode(" " + (alert.text || "")));
+    row.appendChild(text);
+    for (const button of queueButtons(alert.id)) row.appendChild(button);
+    queueLog.appendChild(row);
+  }
+  for (const line of chat) {
+    const row = document.createElement("div");
+    row.className = "queue-row";
+    const text = document.createElement("p");
+    text.appendChild(el("span", "u", line.user || "?"));
+    text.appendChild(document.createTextNode(" " + (line.text || "")));
+    row.appendChild(text);
+    for (const button of queueButtons(line.id)) row.appendChild(button);
+    queueLog.appendChild(row);
+  }
 }
 
 async function refreshHealth() {
@@ -420,6 +484,8 @@ async function refreshHealth() {
     renderSys(health);
     const st = health.status || {};
     applyStatus(st);
+    const queueRes = await fetch("/api/queue", { cache: "no-store" });
+    if (queueRes.ok) renderQueue(await queueRes.json());
     if (health.streamer && streamerName && streamerLogin && document.activeElement !== streamerName && document.activeElement !== streamerLogin) {
       if (!streamerName.value) streamerName.value = health.streamer.display_name || "";
       if (!streamerLogin.value) streamerLogin.value = health.streamer.twitch_login || "";
@@ -535,6 +601,61 @@ $("duck").addEventListener("change", async () => {
   const data = await defPost("/api/audio/duck", { enabled: $("duck").checked });
   $("duckNote").textContent = data.note || "";
 });
+
+const profileSelect = $("profileSelect");
+if (profileSelect) {
+  profileSelect.addEventListener("change", () => {
+    defPost("/api/profile", { name: profileSelect.value }).then(() => refreshHealth()).catch((e) => {
+      hint.textContent = String(e.message || e);
+    });
+  });
+}
+const replayBtn = $("replayBtn");
+if (replayBtn) {
+  replayBtn.addEventListener("click", () => {
+    defPost("/api/queue/replay", {}).then(() => {
+      hint.textContent = "Replayed the last line.";
+    }).catch((e) => { hint.textContent = String(e.message || e); });
+  });
+}
+async function buildRecap(vibe) {
+  const data = await defPost("/api/recap", { vibe: !!vibe });
+  const box = $("recapText");
+  if (box) {
+    box.value = data.markdown || "";
+    box.dataset.copied = "";
+  }
+  return data;
+}
+const recapBtn = $("recapBtn");
+if (recapBtn) {
+  recapBtn.addEventListener("click", () => {
+    buildRecap(false).catch((e) => { hint.textContent = String(e.message || e); });
+  });
+}
+const recapVibeBtn = $("recapVibeBtn");
+if (recapVibeBtn) {
+  recapVibeBtn.addEventListener("click", () => {
+    buildRecap(true).catch((e) => { hint.textContent = String(e.message || e); });
+  });
+}
+const recapCopy = $("recapCopy");
+if (recapCopy) {
+  recapCopy.addEventListener("click", async () => {
+    const box = $("recapText");
+    const text = box ? box.value : "";
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      if (box) {
+        box.focus();
+        box.select();
+      }
+    }
+    if (box) box.dataset.copied = "1";
+    hint.textContent = "Recap copied.";
+  });
+}
 
 async function loadPersona() {
   try {

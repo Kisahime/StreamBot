@@ -48,6 +48,7 @@ class StreamEvent:
     user: str
     users: list[str] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
+    id: str = ""
 
     def people(self) -> list[str]:
         names = [n for n in ([self.user] + list(self.users)) if n]
@@ -112,12 +113,22 @@ class StreamEvent:
         if self.kind == "poll_start":
             return f"A poll just started: {extra.get('title') or 'a poll'}."
         if self.kind == "poll_end":
-            return f"The poll ended: {extra.get('title') or 'a poll'}."
+            return _outcome_scene("Poll", extra, "a poll")
         if self.kind == "prediction_start":
             return f"A prediction just opened: {extra.get('title') or 'a prediction'}."
         if self.kind == "prediction_end":
-            return f"The prediction closed: {extra.get('title') or 'a prediction'}."
+            return _outcome_scene("Prediction", extra, "a prediction")
         return f"{self.kind}: {self.user}"
+
+
+def _outcome_scene(label: str, extra: dict[str, Any], fallback: str) -> str:
+    winner = str(extra.get("winner") or "").strip()
+    if not winner:
+        return f"The {label.lower()} ended: {extra.get('title') or fallback}."
+    percent = extra.get("percent")
+    if percent is None or percent == "":
+        return f"{label} ended: '{winner}' won."
+    return f"{label} ended: '{winner}' won with {int(percent)}%."
 
 
 class EventSubClient:
@@ -528,6 +539,68 @@ def _hype_extra(event: dict[str, Any]) -> dict[str, Any]:
     return {"level": event.get("level") or 1, "train": train}
 
 
+def _quiet_status(event: dict[str, Any]) -> bool:
+    return str(event.get("status") or "").strip().lower() in {"archived", "terminated"}
+
+
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _poll_extra(event: dict[str, Any]) -> dict[str, Any]:
+    title = event.get("title") or "a poll"
+    raw_choices = event.get("choices") if isinstance(event.get("choices"), list) else []
+    choices = []
+    for choice in raw_choices:
+        if not isinstance(choice, dict):
+            continue
+        choices.append({"title": str(choice.get("title") or ""), "votes": _as_int(choice.get("votes"))})
+    extra: dict[str, Any] = {"title": title, "choices": choices}
+    if not choices:
+        return extra
+    winner = max(choices, key=lambda item: item["votes"])
+    total = sum(item["votes"] for item in choices)
+    extra["winner"] = winner["title"]
+    if total > 0:
+        extra["percent"] = int(round(100 * winner["votes"] / total))
+    return extra
+
+
+def _prediction_extra(event: dict[str, Any]) -> dict[str, Any]:
+    title = event.get("title") or "a prediction"
+    raw = event.get("outcomes") if isinstance(event.get("outcomes"), list) else []
+    outcomes = []
+    for outcome in raw:
+        if not isinstance(outcome, dict):
+            continue
+        outcomes.append(
+            {
+                "id": str(outcome.get("id") or ""),
+                "title": str(outcome.get("title") or ""),
+                "users": _as_int(outcome.get("users")),
+                "channel_points": _as_int(outcome.get("channel_points")),
+            }
+        )
+    extra: dict[str, Any] = {"title": title, "outcomes": outcomes}
+    if not outcomes:
+        return extra
+    winner_id = str(event.get("winning_outcome_id") or "")
+    winner = next((item for item in outcomes if item["id"] and item["id"] == winner_id), None)
+    if winner is None:
+        winner = max(outcomes, key=lambda item: (item["channel_points"], item["users"]))
+    extra["winner"] = winner["title"]
+    points = sum(item["channel_points"] for item in outcomes)
+    users = sum(item["users"] for item in outcomes)
+    if points > 0:
+        extra["percent"] = int(round(100 * winner["channel_points"] / points))
+    elif users > 0:
+        extra["percent"] = int(round(100 * winner["users"] / users))
+    return extra
+
+
 def _parse_notification(stype: str, event: dict[str, Any], channel: str = "") -> StreamEvent | None:
     user = (
         event.get("user_name")
@@ -608,9 +681,13 @@ def _parse_notification(stype: str, event: dict[str, Any], channel: str = "") ->
     if stype == "channel.poll.begin":
         return StreamEvent(kind="poll_start", user="chat", extra={"title": event.get("title") or "a poll"})
     if stype == "channel.poll.end":
-        return StreamEvent(kind="poll_end", user="chat", extra={"title": event.get("title") or "a poll"})
+        if _quiet_status(event):
+            return None
+        return StreamEvent(kind="poll_end", user="chat", extra=_poll_extra(event))
     if stype == "channel.prediction.begin":
         return StreamEvent(kind="prediction_start", user="chat", extra={"title": event.get("title") or "a prediction"})
     if stype == "channel.prediction.end":
-        return StreamEvent(kind="prediction_end", user="chat", extra={"title": event.get("title") or "a prediction"})
+        if _quiet_status(event):
+            return None
+        return StreamEvent(kind="prediction_end", user="chat", extra=_prediction_extra(event))
     return None

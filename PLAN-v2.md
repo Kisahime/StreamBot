@@ -328,56 +328,56 @@ Phases:
 
 ### Phase 4: 💡 Feature suggestions (optional, grounded in what the code already supports)
 
-- [ ] **V4-01 💡: Reward-specific prompts and reward queue**
+- [x] **V4-01 💡: Reward-specific prompts and reward queue**
   - *Why:* rewards currently get the generic "hype it" prompt. Builds on `events.channel_point_rewards` and `StreamEvent.extra.title/input`.
   - *Files:* `src/settings.py`, `config.yaml`, `src/orchestrator.py` (`_react_event`), tests
   - *Do:* allow either `hydrate: speak` or a mapping such as `"roast me": {action: speak, prompt: "Playfully roast {user} in one line, nothing mean about looks.", cooldown: 120}`. Format the prompt with `user` and the delimited `input` (V2-03). Add a per-reward cooldown.
   - *Acceptance:* tests: the mapped prompt is used, the cooldown skips with a reason, and the old string form still works.
   - *Depends on:* V2-03
 
-- [ ] **V4-02 💡: Poll and prediction outcomes**
+- [x] **V4-02 💡: Poll and prediction outcomes**
   - *Why:* `poll_end`/`prediction_end` only say "ended". EventSub end payloads include choices, votes and the winning outcome.
   - *Files:* `src/twitch/eventsub.py` (`_parse_notification`, `scene`), tests
   - *Do:* parse `choices[].title/votes` (poll) and `outcomes[]`/`winning_outcome_id` (prediction), and make the scene read like "Poll ended: 'Boss first' won with 62%". Skip `status == "archived"`/`"terminated"` noise.
   - *Acceptance:* unit tests with sample payloads produce the right winner text.
   - *Depends on:* V1-02
 
-- [ ] **V4-03 💡: First-time chatter welcome**
+- [x] **V4-03 💡: First-time chatter welcome**
   - *Why:* IRC tags include `first-msg`, and memory already tracks `greeted`.
   - *Files:* `src/twitch/chat.py` (read `message.first` / tags), `src/policy.py`, `src/orchestrator.py`, `config.yaml`
   - *Do:* add `ChatLine.first_msg`. When `chat.welcome_first_time: true`, treat the line as engaging, with a short typed welcome (not spoken by default), and give the prompt a hint "first message ever in this channel".
   - *Acceptance:* tests: a first message → `chat` action with welcome hint; the second message from the same user → normal.
   - *Depends on:* V3-05
 
-- [ ] **V4-04 💡: Stream session recap**
+- [x] **V4-04 💡: Stream session recap**
   - *Why:* memory already holds events, notes and markers ("Remember this").
   - *Files:* create `src/recap.py`; edit `src/main.py`, `src/web/static/index.html`, `app.js`
   - *Do:* `POST /api/recap` builds a short Markdown summary from the session's events (follows, subs, raids, top chatters by message count, noted moments) without the LLM (deterministic), with an optional LLM "one-paragraph vibe" line. Save it to `data/recaps/YYYY-MM-DD.md` and show it in a dashboard panel with **Copy**.
   - *Acceptance:* test with seeded memory produces the expected sections. The file appears under `data/recaps/` (git-ignored).
   - *Depends on:* V2-04
 
-- [ ] **V4-05 💡: Moderator chat controls for Pixel**
+- [x] **V4-05 💡: Moderator chat controls for Pixel**
   - *Why:* lets mods steer Pixel live, reusing the command allowlist and the V1-01 mod check.
   - *Files:* `src/twitch/chat.py`, `src/orchestrator.py`, `config.yaml`
   - *Do:* `!pixel mute|unmute|chill|hype|stop` for mods and the broadcaster only, mapped to `set_mute`, `set_mood` and `interrupt`. Acknowledge with a short typed line, with a cooldown.
   - *Acceptance:* tests: mod `!pixel chill` → mood chill; viewer → ignored.
   - *Depends on:* V1-01
 
-- [ ] **V4-06 💡: Overlay upgrades**
+- [x] **V4-06 💡: Overlay upgrades**
   - *Why:* the overlay already gets `alert` messages with `kind`, plus status and captions.
   - *Files:* `src/web/static/overlay.js`, `overlay.css`, `overlay.html`, `README.md`
   - *Do:* per-kind alert styling (`data-kind="raid"` and so on), a simple slide or fade animation that respects `prefers-reduced-motion`, a caption typewriter effect while `speaking`, a `?alerts=0` option to hide alerts, and a `?fontsize=` option. Guard `JSON.parse`.
   - *Acceptance:* manual in an OBS Browser Source: a raid shows the raid style, and `?alerts=0` hides alerts. No console errors on bad messages.
   - *Depends on:* none
 
-- [ ] **V4-07 💡: Replay and skip controls in the queue panel**
+- [x] **V4-07 💡: Replay and skip controls in the queue panel**
   - *Why:* the queue snapshot and skip reasons are already broadcast.
   - *Files:* `src/main.py`, `src/orchestrator.py` (`queue_snapshot`), `src/web/static/app.js`
   - *Do:* give queue items IDs. Add `POST /api/queue/drop {id}`, `POST /api/queue/answer {id}` (answer now, ignoring cooldown), and **Replay last line** (`say_line` of the last cohost caption without posting).
   - *Acceptance:* buttons work on the dashboard, and tests cover drop and answer on the orchestrator.
   - *Depends on:* V2-01
 
-- [ ] **V4-08 💡: Profiles ("Just chatting", "Focus game")**
+- [x] **V4-08 💡: Profiles ("Just chatting", "Focus game")**
   - *Why:* many toggles (mood, post voice, events speak, cooldowns) are changed by hand.
   - *Files:* `config.yaml` (`profiles:` section), `src/settings.py`, `src/orchestrator.py`, `src/main.py`, `app.js`
   - *Do:* a profile is a named set of overrides for runtime-safe keys (mood, cooldowns, `events.speak`, `post_voice_replies_to_chat`, `max_replies_per_minute`). Add `POST /api/profile {name}` and a dropdown, persisted in `booth.json`.

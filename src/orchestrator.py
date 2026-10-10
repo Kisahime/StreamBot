@@ -36,7 +36,8 @@ from src.memory import (
     sanitize_reply,
     streamer_smalltalk_fallback,
 )
-from src.policy import chat_action, mention_waits
+from src.policy import chat_action, mention_waits, pixel_control
+from src.recap import build_recap, write_recap
 from src.safety import DEFLECT, clean_chat_output, fence_viewer_text, is_blocked
 from src.settings import ROOT, WHISPER_LANGUAGES, Settings, atomic_write_text, update_config
 from src.tts.piper import PiperTTS
@@ -97,12 +98,21 @@ class Orchestrator:
             self.data_dir / "streamer.json",
             default_login=settings.twitch_channel,
         )
+        self._runtime_base = {
+            "mood": "normal",
+            "cooldown_seconds": float(settings.cooldown_seconds),
+            "per_user_cooldown_seconds": float(settings.per_user_cooldown_seconds),
+            "events_speak": bool(settings.events_speak),
+            "post_voice_replies_to_chat": bool(settings.post_voice_replies_to_chat),
+            "max_replies_per_minute": int(settings.max_replies_per_minute),
+        }
         self.booth = load_booth(
             self.data_dir / "booth.json",
             fallback_mute=settings.tts_mute,
             fallback_post=settings.post_voice_replies_to_chat,
         )
         self.mood = self.booth.mood
+        self.profile_name = ""
         self.settings.post_voice_replies_to_chat = self.booth.post_voice_replies_to_chat
         self._refresh_prompts()
         self.memory = ConversationMemory(
@@ -114,6 +124,11 @@ class Orchestrator:
         )
         self.memory.set_streamer_display(self.identity.spoken_name())
         self.memory.set_cohost_name(self._cohost_name())
+        if self.booth.profile:
+            try:
+                self._install_profile(self.booth.profile, persist=False)
+            except ValueError:
+                self.profile_name = ""
         self._voice_gen = 0
         self._voice_cancel = asyncio.Event()
         self._chat_pending: deque[ChatLine] = deque(maxlen=60)
@@ -148,6 +163,10 @@ class Orchestrator:
         self._last_raider = ""
         self._last_raider_id = ""
         self._last_shoutout_at = 0.0
+        self._last_control_at = 0.0
+        self._reward_at: dict[str, float] = {}
+        self._last_caption = ""
+        self._queue_seq = 0
         self.timings: dict[str, int | None] = {
             "stt_ms": None,
             "first_token_ms": None,
@@ -203,8 +222,42 @@ class Orchestrator:
             tts_mute=self.tts_mute,
             post_voice_replies_to_chat=self.settings.post_voice_replies_to_chat,
             mood=self.mood,
+            profile=self.profile_name,
         )
         save_booth(self.data_dir / "booth.json", self.booth)
+
+    def _install_profile(self, name: str, *, persist: bool) -> str:
+        wanted = (name or "").strip()
+        canonical = ""
+        if wanted:
+            for key in self.settings.profiles:
+                if key.lower() == wanted.lower():
+                    canonical = key
+                    break
+            if not canonical:
+                raise ValueError(f"Unknown profile: {name}")
+        self.profile_name = canonical
+        values = dict(self._runtime_base)
+        if canonical:
+            values.update(self.settings.profiles[canonical])
+        mood = str(values.get("mood") or "normal").lower()
+        if mood not in ("chill", "normal", "hype"):
+            mood = "normal"
+        self.mood = mood
+        self.settings.cooldown_seconds = float(values["cooldown_seconds"])
+        self.settings.per_user_cooldown_seconds = float(values["per_user_cooldown_seconds"])
+        self.settings.events_speak = bool(values["events_speak"])
+        self.settings.post_voice_replies_to_chat = bool(values["post_voice_replies_to_chat"])
+        self.settings.max_replies_per_minute = int(values["max_replies_per_minute"])
+        self._refresh_prompts()
+        if persist:
+            self._persist_booth()
+        return canonical
+
+    async def apply_profile(self, name: str) -> str:
+        canonical = self._install_profile(name, persist=True)
+        await self.hub.patch_status(mood=self.mood, profile=canonical)
+        return canonical
 
     async def start(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -680,11 +733,20 @@ class Orchestrator:
             await self.hub.patch_status(hype_level=event.extra.get("level"))
             return
         if event.kind == "redeem":
-            action = self.settings.reward_action(str(event.extra.get("title") or ""))
-            if action == "ignore":
+            title = str(event.extra.get("title") or "")
+            spec = self.settings.reward_spec(title)
+            if spec.action == "ignore":
                 await self._note_skip("reward ignored", event.user)
                 return
-            event.extra["delivery"] = action
+            key = title.strip().lower()
+            if spec.cooldown > 0 and (time.monotonic() - self._reward_at.get(key, 0.0)) < spec.cooldown:
+                await self._note_skip("reward cooldown", event.user)
+                return
+            if spec.cooldown > 0:
+                self._reward_at[key] = time.monotonic()
+            event.extra["delivery"] = spec.action
+            if spec.prompt:
+                event.extra["reward_prompt"] = spec.prompt
         if event.kind == "follow":
             if not self.settings.announce_follows:
                 return
@@ -819,17 +881,22 @@ class Orchestrator:
             reply = DEFLECT
         else:
             temp = mood_temperature("hype" if event.kind == "raid" and self.mood == "normal" else self.mood)
+            reward_prompt = str(event.extra.get("reward_prompt") or "").strip()
+            if event.kind == "redeem" and reward_prompt:
+                user_content = (
+                    reward_prompt.replace("{user}", primary).replace("{input}", fence_viewer_text(reward_input))
+                    + "\n\nWords to speak aloud only."
+                )
+            else:
+                user_content = (
+                    f"You're on the couch next to {self.identity.spoken_name()}. This just happened on stream:\n{scene}\n\n"
+                    "Hype it like a cohost for a second, then drop it. No corporate thank-you. "
+                    "Words to speak aloud only."
+                )
             reply = await self._finish_reply(
                 [
                     {"role": "system", "content": self.voice_prompt},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"You're on the couch next to {self.identity.spoken_name()}. This just happened on stream:\n{scene}\n\n"
-                            "Hype it like a cohost for a second, then drop it. No corporate thank-you. "
-                            "Words to speak aloud only."
-                        ),
-                    },
+                    {"role": "user", "content": user_content},
                 ],
                 temperature=temp,
             )
@@ -882,6 +949,7 @@ class Orchestrator:
             thread=thread,
         )
         self._spawn(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}), "memory")
+        self._remember_caption(spoken)
         await self.hub.broadcast({"type": "transcript", "data": {"role": "cohost", "text": spoken}})
         if post and self.twitch and self.twitch.connected:
             if not chat_text:
@@ -999,6 +1067,18 @@ class Orchestrator:
         self.memory.remember("streamer_voice", self.identity.spoken_name(), stored, via="voice", thread=STREAMER_THREAD)
         await self._voice_reply(text, gen, started)
 
+    def _remember_caption(self, text: str) -> None:
+        cleaned = (text or "").strip()
+        if cleaned:
+            self._last_caption = cleaned
+
+    async def replay_last(self) -> bool:
+        text = (self._last_caption or "").strip()
+        if not text:
+            return False
+        await self.say_line(text, post_chat=False)
+        return True
+
     async def say_line(self, text: str, post_chat: bool = True) -> None:
         reply = sanitize_reply(text, str(self.persona.get("name") or ""))
         chat_text = self._chat_text(reply)
@@ -1006,6 +1086,7 @@ class Orchestrator:
             await self._note_skip("output guard", "")
             return
         spoken = for_speech(chat_text)
+        self._remember_caption(spoken)
         if post_chat and self.twitch and self.twitch.connected:
             await self.twitch.send(chat_text)
             await self.hub.broadcast(
@@ -1122,6 +1203,7 @@ class Orchestrator:
             thread=STREAMER_THREAD,
         )
         self._spawn(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}), "memory")
+        self._remember_caption(reply)
         await self.hub.broadcast({"type": "transcript", "data": {"role": "cohost", "text": reply}})
         if post and self.settings.post_voice_replies_to_chat and self.twitch and self.twitch.connected:
             if gen != self._voice_gen:
@@ -1247,7 +1329,49 @@ class Orchestrator:
         engaging = [line for line in self._chat_pending if line.is_engaging()]
         if engaging:
             return engaging[-1]
+        if self.settings.welcome_first_time:
+            firsts = [line for line in self._chat_pending if line.first_msg and not line.command]
+            if firsts:
+                return firsts[-1]
         return self._chat_pending[-1]
+
+    def _drop_chat_target(self, target: ChatLine) -> None:
+        if self.identity.is_login(target.user):
+            kept = [line for line in self._chat_pending if line is not target]
+        else:
+            kept = [line for line in self._chat_pending if line is not target and line.user.lower() != target.user.lower()]
+        self._chat_pending.clear()
+        self._chat_pending.extend(kept)
+
+    def _control_ready(self) -> bool:
+        wait = self.settings.control_cooldown_seconds
+        if wait <= 0:
+            return True
+        return (time.monotonic() - self._last_control_at) >= wait
+
+    async def _type_ack(self, text: str) -> None:
+        if self.twitch and self.twitch.connected:
+            await self.twitch.send(text)
+        await self.hub.broadcast(
+            {"type": "chat", "data": {"user": self.persona.get("name"), "text": text, "bot": True}}
+        )
+
+    async def _run_pixel_control(self, verb: str) -> None:
+        if verb == "mute":
+            await self.set_mute(True)
+            await self._type_ack("Muted.")
+        elif verb == "unmute":
+            await self.set_mute(False)
+            await self._type_ack("Voice is back.")
+        elif verb == "chill":
+            await self.set_mood("chill")
+            await self._type_ack("Mood is chill.")
+        elif verb == "hype":
+            await self.set_mood("hype")
+            await self._type_ack("Mood is hype.")
+        elif verb == "stop":
+            await self.interrupt()
+            await self._type_ack("Stopped.")
 
     async def _consider_chat_locked(self) -> bool:
         if self._busy_voice:
@@ -1258,29 +1382,46 @@ class Orchestrator:
         target = self._pick_chat_target()
         if target is None:
             return False
-        action = chat_action(target)
+        if pixel_control(target):
+            self._drop_chat_target(target)
+            await self._publish_queue()
+            await self._perform_chat(target, ignore_rate=False)
+            return True
+        action = chat_action(target, welcome_first_time=self.settings.welcome_first_time)
         ok, why = self._rate_ok(mention=action == "speak", user=target.user)
         if not ok:
             await self._note_skip(why, target.user)
             return False
-        if self.identity.is_login(target.user):
-            kept = [line for line in self._chat_pending if line is not target]
-        else:
-            kept = [line for line in self._chat_pending if line is not target and line.user.lower() != target.user.lower()]
-        self._chat_pending.clear()
-        self._chat_pending.extend(kept)
+        self._drop_chat_target(target)
         await self._publish_queue()
+        await self._perform_chat(target, ignore_rate=False)
+        return True
+
+    async def _perform_chat(self, target: ChatLine, *, ignore_rate: bool) -> None:
+        verb = pixel_control(target)
+        if verb:
+            if not self._can_run_mod_command(target):
+                await self._note_skip("not a mod", target.user)
+                return
+            if not ignore_rate and not self._control_ready():
+                await self._note_skip("control cooldown", target.user)
+                return
+            await self._run_pixel_control(verb)
+            self._last_control_at = time.monotonic()
+            self._mark_reply(target.user)
+            return
+        action = chat_action(target, welcome_first_time=self.settings.welcome_first_time)
         if action == "command" or target.command == "!so" or target.command in self.settings.mod_commands:
             if target.command in self.settings.mod_commands and not self._can_run_mod_command(target):
                 await self._note_skip("not a mod", target.user)
-                return True
+                return
             who = ""
             parts = target.text.split()
             if len(parts) > 1:
                 who = parts[1].lstrip("@")
-            if not self._shoutout_ready():
+            if not ignore_rate and not self._shoutout_ready():
                 await self._note_skip("shoutout cooldown", target.user)
-                return True
+                return
             try:
                 await self.shoutout(who or None)
             except Exception as e:
@@ -1288,9 +1429,8 @@ class Orchestrator:
             else:
                 self._last_shoutout_at = time.monotonic()
             self._mark_reply(target.user)
-            return True
+            return
         await self._decide_chat(target, action)
-        return True
 
     async def _decide_chat(self, line: ChatLine, action: str) -> None:
         if self._busy_voice:
@@ -1348,6 +1488,7 @@ class Orchestrator:
             via="chat",
             thread=thread_key,
         )
+        self._remember_caption(spoken)
         self.memory.note_reply_to(line.user, chat_text, thread=thread_key)
         if not streamer:
             self.memory.mark_greeted(line.user)
@@ -1392,6 +1533,8 @@ class Orchestrator:
             focus = self.memory.viewer_thread_key(line.user)
             who_line = f"{line.user} in chat:\n{fenced}\nThis is a viewer, not {name}.\n"
             ask = f"One short Twitch chat line starting with @{line.user}."
+            if self.settings.welcome_first_time and line.first_msg:
+                ask += " This is their first message ever in this channel. Give a short typed welcome."
         history_limit = 4 if ambient else None
         messages = [
             {"role": "system", "content": self.chat_prompt},
@@ -1490,12 +1633,88 @@ class Orchestrator:
         await self.hub.patch_status(skip=dict(self._last_skip))
         await self.hub.broadcast({"type": "skip", "data": dict(self._last_skip)})
 
+    def _next_qid(self) -> str:
+        self._queue_seq += 1
+        return f"q{self._queue_seq}"
+
+    def _assign_queue_ids(self) -> None:
+        for line in self._chat_pending:
+            if not line.id:
+                line.id = self._next_qid()
+        for event in self._event_pending:
+            if not event.id:
+                event.id = self._next_qid()
+
+    def _retain_chat(self, kept: list[ChatLine]) -> None:
+        self._chat_pending.clear()
+        self._chat_pending.extend(kept)
+
+    def _retain_events(self, kept: list[StreamEvent]) -> None:
+        self._event_pending.clear()
+        self._event_pending.extend(kept)
+
     def queue_snapshot(self) -> dict[str, list]:
+        self._assign_queue_ids()
         alerts = sorted(self._event_pending, key=lambda e: EVENT_PRIORITY.get(e.kind, 9))
+        chat = [
+            {"id": line.id, "user": line.user, "text": line.text[:120]}
+            for line in list(self._chat_pending)[:12]
+        ]
         return {
-            "chat": [{"user": line.user, "text": line.text[:120]} for line in list(self._chat_pending)[:12]],
-            "alerts": [{"kind": event.kind, "text": event.scene()} for event in alerts],
+            "chat": chat,
+            "alerts": [{"id": event.id, "kind": event.kind, "text": event.scene()} for event in alerts],
         }
+
+    async def drop_queued(self, item_id: str) -> bool:
+        self._assign_queue_ids()
+        item_id = (item_id or "").strip()
+        if not item_id:
+            return False
+        for line in list(self._chat_pending):
+            if line.id == item_id:
+                self._retain_chat([item for item in self._chat_pending if item is not line])
+                await self._publish_queue()
+                return True
+        for event in list(self._event_pending):
+            if event.id == item_id:
+                self._retain_events([item for item in self._event_pending if item is not event])
+                await self._publish_queue()
+                return True
+        return False
+
+    async def answer_queued(self, item_id: str) -> bool:
+        self._assign_queue_ids()
+        item_id = (item_id or "").strip()
+        if not item_id:
+            return False
+        for line in list(self._chat_pending):
+            if line.id == item_id:
+                self._retain_chat([item for item in self._chat_pending if item is not line])
+                await self._publish_queue()
+                await self._perform_chat(line, ignore_rate=True)
+                return True
+        for event in list(self._event_pending):
+            if event.id == item_id:
+                self._retain_events([item for item in self._event_pending if item is not event])
+                await self._publish_queue()
+                await self._react_event(event)
+                return True
+        return False
+
+    async def make_recap(self, *, vibe: bool = False) -> dict[str, str]:
+        paragraph = ""
+        if vibe:
+            draft = build_recap(self.memory)
+            raw = await self.llm.complete(
+                [
+                    {"role": "system", "content": "Write one short paragraph about this stream. No headings."},
+                    {"role": "user", "content": draft or "Quiet stream."},
+                ],
+                temperature=0.7,
+            )
+            paragraph = (raw or "").strip()
+        text, path = write_recap(self.memory, self.data_dir / "recaps", vibe=paragraph)
+        return {"markdown": text, "path": path.name}
 
     async def _publish_queue(self) -> None:
         await self.hub.patch_status(queue=self.queue_snapshot())

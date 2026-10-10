@@ -137,6 +137,16 @@ async def snapshot(settings: Settings, orch) -> dict[str, Any]:
             "speaker_device_name": settings.speaker_device_name,
         },
         "overlay": {"alert_hold_seconds": settings.overlay_alert_hold},
+        "profile": getattr(orch, "profile_name", ""),
+        "profiles": list(getattr(settings, "profiles", {}) or {}),
+        "runtime": {
+            "mood": getattr(orch, "mood", "normal"),
+            "cooldown_seconds": settings.cooldown_seconds,
+            "per_user_cooldown_seconds": settings.per_user_cooldown_seconds,
+            "events_speak": settings.events_speak,
+            "post_voice_replies_to_chat": settings.post_voice_replies_to_chat,
+            "max_replies_per_minute": settings.max_replies_per_minute,
+        },
     }
 
 
