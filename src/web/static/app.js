@@ -177,6 +177,16 @@ $("shoutoutBtn").addEventListener("click", async () => {
   hint.textContent = "Shoutout sent.";
 });
 
+const debugLogBtn = $("debugLogBtn");
+if (debugLogBtn) {
+  debugLogBtn.addEventListener("click", async () => {
+    const data = await post("/api/logging/debug", { enabled: !debugLogBtn.classList.contains("active") });
+    if (failed(data)) return;
+    debugLogBtn.classList.toggle("active", !!data.debug);
+    hint.textContent = data.debug ? "Debug log on for 10 minutes." : "Debug log off.";
+  });
+}
+
 $("markerBtn").addEventListener("click", async () => {
   const data = await post("/api/marker", { note: "clip moment" });
   if (failed(data)) return;
@@ -211,7 +221,7 @@ saveStreamerBtn.addEventListener("click", async () => {
   });
   if (failed(data)) return;
   streamerLabel = data.spoken_name || streamerName.value.trim() || "Streamer";
-  hint.textContent = `Pixel will treat ${streamerLabel} as the streamer.`;
+  hint.textContent = `${personaName} will treat ${streamerLabel} as the streamer.`;
 });
 
 $("mood").addEventListener("change", async () => {

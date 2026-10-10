@@ -140,9 +140,9 @@ def replies_too_similar(a: str, b: str) -> bool:
     return len(left & right) / min(len(left), len(right)) >= 0.6
 
 
-def streamer_smalltalk_fallback(text: str, name: str = "Pixel") -> str:
+def streamer_smalltalk_fallback(text: str, name: str = "Cohost") -> str:
     """A short in-character line when the model only produced an interview template."""
-    who = (name or "Pixel").strip() or "Pixel"
+    who = (name or "Cohost").strip() or "Cohost"
     low = re.sub(r"[^a-z0-9' ?]", "", (text or "").lower()).strip()
     if re.search(r"\bhow are (you|ya|u)\b", low):
         return "pretty good, parked on the couch. you?"

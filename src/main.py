@@ -109,6 +109,10 @@ class RecapBody(BaseModel):
     vibe: bool = False
 
 
+class DebugLogBody(BaseModel):
+    enabled: bool = True
+
+
 def _booth_port(prepared: tuple[Settings, Hub, Orchestrator] | None) -> int:
     """Port for the Host allow list.
 
@@ -123,7 +127,7 @@ def _booth_port(prepared: tuple[Settings, Hub, Orchestrator] | None) -> int:
         with (ROOT / "config.yaml").open(encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
         return int((data.get("server") or {}).get("port") or 8080)
-    except (OSError, TypeError, ValueError):
+    except Exception:
         return 8080
 
 
@@ -140,7 +144,11 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
             return
         ensure_cuda_dlls()
         settings = load_settings()
-        setup_logging([settings.twitch_token, settings.twitch_event_token, settings.event_token()])
+        setup_logging(
+            [settings.twitch_token, settings.twitch_event_token, settings.event_token()],
+            level=settings.log_level,
+            debug_modules=settings.log_debug_modules,
+        )
         bind = os.getenv("COHOST_BIND_HOST", settings.host)
         assert_bind_allowed(bind, settings.allow_remote)
         if settings.missing_secrets() and os.getenv("COHOST_SKIP_SECRET_CHECK") != "1":
@@ -264,7 +272,8 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
 
     @app.get("/api/persona")
     async def persona_get():
-        text = (ROOT / "persona.yaml").read_text(encoding="utf-8")
+        path = app.state.orch.persona_path
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
         return {"text": text, "name": app.state.orch.persona.get("name")}
 
     @app.post("/api/persona")
@@ -279,6 +288,15 @@ def create_app(prepared: tuple[Settings, Hub, Orchestrator] | None = None) -> Fa
     async def persona_reload():
         app.state.orch.reload_persona()
         return {"ok": True, "name": app.state.orch.persona.get("name")}
+
+    @app.post("/api/logging/debug")
+    async def debug_logging(body: DebugLogBody):
+        if body.enabled:
+            await app.state.orch.enable_debug_log()
+            return {"ok": True, "debug": True, "seconds": 600}
+        app.state.orch.restore_log_level()
+        app.state.orch._debug_log_active = False
+        return {"ok": True, "debug": False}
 
     @app.post("/api/mood")
     async def mood(body: MoodBody):

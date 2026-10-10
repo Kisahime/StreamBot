@@ -110,7 +110,17 @@ def test_dashboard_shoutout_does_not_need_a_mod_badge(tmp_path, settings, monkey
                 "moderator_id": "22",
             }
         ]
-        assert any(item.startswith("sam, welcome in.") or item == "sam, welcome in." for item in orch.twitch.sent)
+        assert "go check out sam" in orch.twitch.sent
+        assert orch.tts.spoken
+
+        orch.tts.spoken.clear()
+        orch.twitch.sent.clear()
+        orch._last_raider = "sam"
+        orch._last_shoutout_at = 0
+        settings.shoutout_speak = False
+        await orch.shoutout("sam")
+        assert "sam, welcome in." in orch.twitch.sent
+        assert orch.tts.spoken == []
 
     asyncio.run(run())
 

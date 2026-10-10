@@ -190,6 +190,9 @@ class Settings:
         self.chat_commands = _command_list(data, "chat.commands", ["!so", "!pixel", "!ask"])
         self.mod_commands = _command_list(data, "chat.mod_commands", ["!so"])
         self.shoutout_cooldown_seconds = float(_get(data, "chat.shoutout_cooldown_seconds", 120))
+        self.shoutout_line = str(_get(data, "chat.shoutout_line", "go check out {user}") or "go check out {user}")
+        self.shoutout_speak = bool(_get(data, "chat.shoutout_speak", True))
+        self.control_command = str(_get(data, "chat.control_command", "") or "").strip()
         self.chat_max_age_seconds = float(_get(data, "chat.max_age_seconds", 45))
         self.welcome_first_time = bool(_get(data, "chat.welcome_first_time", False))
         self.control_cooldown_seconds = float(_get(data, "chat.control_cooldown_seconds", 4))
@@ -222,6 +225,10 @@ class Settings:
         self.profiles = _parse_profiles(_get(data, "profiles", {}) or {})
 
         self.overlay_alert_hold = float(_get(data, "overlay.alert_hold_seconds", 6))
+        self.log_level = str(_get(data, "logging.level", "INFO") or "INFO").upper()
+        self.log_debug_modules = [
+            str(name) for name in (_get(data, "logging.debug_modules", []) or []) if str(name).strip()
+        ]
 
         self.twitch_token = os.getenv("TWITCH_TOKEN", "").strip()
         self.twitch_nick = os.getenv("TWITCH_NICK", "").strip()

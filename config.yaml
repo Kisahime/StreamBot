@@ -93,6 +93,11 @@ chat:
   mod_commands:
     - "!so"
   shoutout_cooldown_seconds: 120
+  # Posted for !so. {user} is the login. A shoutout of the last raider still says "welcome in".
+  shoutout_line: "go check out {user}"
+  shoutout_speak: true
+  # Empty derives !<persona name>. !pixel always stays as an alias.
+  control_command: ""
   # Pending viewer lines older than this are dropped (streamer lines and commands stay).
   max_age_seconds: 45
   # First-time chatters get a short typed welcome instead of a spoken reply.
@@ -130,6 +135,11 @@ events:
 
 overlay:
   alert_hold_seconds: 6
+
+logging:
+  level: INFO
+  # Logger names that stay at DEBUG, for example ["cohost.mic", "cohost.tts"].
+  debug_modules: []
 
 safety:
   # Pixel strips links from chat posts unless this is true.
