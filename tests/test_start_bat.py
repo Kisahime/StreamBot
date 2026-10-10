@@ -28,6 +28,9 @@ def test_shipped_config_keeps_optional_feeds_off():
     assert settings.hype_train_enabled is False
     assert settings.polls_enabled is False
     assert settings.predictions_enabled is False
+    assert settings.ad_breaks_enabled is False
+    assert settings.shoutouts_enabled is False
+    assert settings.ask_queue is False
     assert settings.allow_links is False
     assert "!so" in settings.mod_commands
     assert settings.shoutout_cooldown_seconds == 120

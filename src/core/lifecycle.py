@@ -145,6 +145,8 @@ def bind(
     orch._reward_at: dict[str, float] = {}
     orch._last_caption = ""
     orch._queue_seq = 0
+    orch._questions: deque[ChatLine] = deque(maxlen=40)
+    orch._last_clip_at = 0.0
     orch.timings: dict[str, int | None] = {
         "stt_ms": None,
         "first_token_ms": None,
@@ -647,3 +649,22 @@ async def _debug_log_window(orch, seconds: float) -> None:
         raise
     orch._debug_log_active = False
     orch.restore_log_level()
+
+
+async def edit_note(orch, login: str, text: str, op: str = "add", pinned: bool | None = None) -> dict:
+    raw = (login or "").strip()
+    if raw.lower() in ("", "streamer"):
+        key = STREAMER_THREAD
+        is_streamer = True
+    else:
+        key = raw.lower()
+        is_streamer = False
+    if (op or "").strip().lower() == "remove":
+        orch.memory.remove_note(key, text)
+    elif (text or "").strip():
+        orch.memory.add_note(key, text, is_streamer=is_streamer)
+    if pinned is not None:
+        orch.memory.set_pinned(key, bool(pinned))
+    snap = orch.memory.snapshot()
+    await orch.hub.broadcast({"type": "memory", "data": snap})
+    return snap

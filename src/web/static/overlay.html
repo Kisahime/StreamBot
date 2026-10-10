@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Cohost Overlay</title>
-  <link rel="stylesheet" href="/static/overlay.css?v=8" />
+  <link rel="stylesheet" href="/static/overlay.css?v=9" />
 </head>
 <body>
   <div id="conn" class="conn" title="overlay connected"></div>
@@ -13,7 +13,13 @@
     <p class="name" id="name">Cohost</p>
     <p class="line" id="line">Waiting…</p>
     <p class="alert" id="alert" hidden></p>
+    <div id="hype" class="hype" hidden>
+      <div class="hype-track"><div id="hypeBar" class="hype-bar"></div></div>
+      <p id="hypeLabel" class="hype-label"></p>
+    </div>
+    <p id="ad" class="ad" hidden></p>
+    <p id="question" class="question" hidden></p>
   </div>
-  <script src="/static/overlay.js?v=9"></script>
+  <script src="/static/overlay.js?v=11"></script>
 </body>
 </html>

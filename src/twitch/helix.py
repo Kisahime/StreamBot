@@ -54,6 +54,22 @@ async def shoutout(
         raise HelixError(f"shoutout HTTP {r.status_code}: {r.text[:200]}", r.status_code)
 
 
+async def create_clip(token: str, client_id: str, broadcaster_id: str) -> dict[str, str]:
+    """Create a clip. Returns the Helix id and edit URL."""
+    async with httpx.AsyncClient(timeout=12.0) as client:
+        r = await client.post(
+            f"{HELIX}/clips",
+            headers=_headers(token, client_id),
+            params={"broadcaster_id": broadcaster_id},
+        )
+    if r.status_code not in (200, 202):
+        raise HelixError(f"clip HTTP {r.status_code}: {r.text[:200]}", r.status_code)
+    data = (r.json().get("data") or [{}])[0]
+    if not isinstance(data, dict):
+        data = {}
+    return {"id": str(data.get("id") or ""), "edit_url": str(data.get("edit_url") or "")}
+
+
 async def create_marker(token: str, client_id: str, broadcaster_id: str, description: str) -> None:
     body = {"user_id": broadcaster_id, "description": (description or "cohost moment")[:140]}
     async with httpx.AsyncClient(timeout=12.0) as client:

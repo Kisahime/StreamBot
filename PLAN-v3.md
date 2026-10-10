@@ -193,56 +193,56 @@ Do these on a test stream or with the booth open before relying on the features.
 
 ### Phase 3: Stream-day features (💡 suggestions grounded in existing code)
 
-- [ ] **V3-P3-01 💡 Hype-train meter on the overlay and dashboard** (F-14)
+- [x] **V3-P3-01 💡 Hype-train meter on the overlay and dashboard** (F-14)
   - *Why:* `hype_progress` events and `hype_level` status already exist; the v2 payload also carries `progress`, `goal`, `expires_at`.
   - *Do:* extend `_hype_extra()` to keep `progress`, `goal`, `total`, `expires_at`; broadcast a `hype` message; overlay draws a bar with level and countdown (`?hype=0` hides it); dashboard shows the same in the Twitch panel.
   - *Files:* `src/twitch/eventsub.py`, `src/orchestrator.py`, `src/web/static/overlay.*`, `src/web/static/app.js`, tests
   - *Acceptance:* a fake progress event updates the bar; an end event hides it after `overlay.alert_hold_seconds`.
   - *Depends on:* owner check V3-P0-02 (hype train scope)
 
-- [ ] **V3-P3-02 💡 Stream online/offline awareness with automatic recap**
+- [x] **V3-P3-02 💡 Stream online/offline awareness with automatic recap**
   - *Why:* EventSub `stream.online` / `stream.offline` need no scope; the recap builder already exists.
   - *Do:* subscribe to both (core, no scope); on online start a new memory "session" (rotate `session_id`, stamp `session_started`); on offline auto-write the recap (`data/recaps/YYYY-MM-DD-HHMM.md`), and optionally set the booth to idle. Scope recap content to the session (fixes F-09).
   - *Files:* `src/settings.py`, `src/twitch/auth.py`, `src/twitch/eventsub.py`, `src/orchestrator.py`, `src/recap.py`, `src/memory.py`, tests
   - *Acceptance:* fake online→events→offline writes one recap file with only that session's items, including cheers/redeems/polls; two sessions on one day make two files.
   - *Depends on:* none
 
-- [ ] **V3-P3-03 💡 Ad-break heads-up**
+- [x] **V3-P3-03 💡 Ad-break heads-up**
   - *Why:* `channel.ad_break.begin` (scope `channel:read:ads`) fits the existing feed/scope system.
   - *Do:* new optional feed `events.ad_breaks`; Pixel types (not speaks, by default) a short "ad break, back in N seconds" line and the overlay shows a countdown.
   - *Files:* `src/settings.py`, `src/twitch/auth.py`, `src/twitch/eventsub.py`, `src/orchestrator.py`, overlay, `config.yaml`, tests
   - *Acceptance:* a fake event produces one line and a countdown; missing scope shows `missing scope channel:read:ads` in the feed list.
   - *Depends on:* V3-P1-06
 
-- [ ] **V3-P3-04 💡 Real Twitch reply threads**
+- [x] **V3-P3-04 💡 Real Twitch reply threads**
   - *Why:* `ChatLine.id` exists, but replies are plain `@name` messages. Threaded replies look cleaner in chat.
   - *Do:* capture the IRC `id` tag in `event_message`; when sending a viewer reply, send it as a reply (TwitchIO 2.x: raw PRIVMSG with `@reply-parent-msg-id=…`, or Helix *Send Chat Message* with `reply_parent_message_id`, which needs `user:write:chat`). Fall back to the current `@name` line.
   - *Files:* `src/twitch/chat.py`, `src/orchestrator.py`, tests
   - *Acceptance:* a fake bot records a reply-parent id on viewer replies; streamer replies and alerts stay unthreaded.
   - *Depends on:* none
 
-- [ ] **V3-P3-05 💡 Clip button next to "Remember this"**
+- [x] **V3-P3-05 💡 Clip button next to "Remember this"**
   - *Why:* Helix *Create Clip* (scope `clips:edit`) pairs with the existing marker flow.
   - *Do:* `POST /api/clip` creates a clip, stores the edit URL as a streamer note, and shows it in the log; add a `!pixel clip` mod verb (cooldown 60 s).
   - *Files:* `src/twitch/helix.py`, `src/orchestrator.py`, `src/main.py`, `src/policy.py`, dashboard, tests
   - *Acceptance:* fake Helix returns an id and the note is saved; a missing scope gives a clear message; the mod verb respects its cooldown.
   - *Depends on:* V3-P1-06
 
-- [ ] **V3-P3-06 💡 `!ask` question queue**
+- [x] **V3-P3-06 💡 `!ask` question queue**
   - *Why:* `!ask` is already allowlisted and the queue panel exists.
   - *Do:* `!ask …` lines go into a separate "Questions" list (not auto-answered when `chat.ask_queue: true`); the dashboard shows them with **Answer** (spoken) / **Drop**; overlay can optionally show the current question.
   - *Files:* `src/orchestrator.py`, `src/settings.py`, `src/main.py`, `src/web/static/*`, tests
   - *Acceptance:* three `!ask` lines appear in order; **Answer** speaks a reply to that viewer; stale filtering doesn't drop them.
   - *Depends on:* V3-P2-06 (optional, easier after the split)
 
-- [ ] **V3-P3-07 💡 Viewer notes you can edit**
+- [x] **V3-P3-07 💡 Viewer notes you can edit**
   - *Why:* notes are auto-captured by regex (`NOTE_RE`) and shown read-only; they drive "private bookmarks" in prompts.
   - *Do:* add `POST /api/memory/note` (add/remove) and an editable notes list in the People panel; add a "pin" flag that survives retention pruning.
   - *Files:* `src/memory.py`, `src/main.py`, `src/web/static/app.js`, tests
   - *Acceptance:* adding a note shows up in the prompt block for that viewer; a pinned viewer survives `prune()`.
   - *Depends on:* none
 
-- [ ] **V3-P3-08 💡 Shoutout-received and raid-out lines**
+- [x] **V3-P3-08 💡 Shoutout-received and raid-out lines**
   - *Why:* EventSub `channel.shoutout.receive` / `channel.shoutout.create` (scope `moderator:read:shoutouts`) and outgoing raids (`channel.raid` with `from_broadcaster_user_id`) slot into the existing parser (outgoing raids are currently dropped at `eventsub.py:650`).
   - *Do:* optional feed `events.shoutouts`; Pixel thanks the channel that shouted you out; on an outgoing raid, Pixel says a goodbye line.
   - *Files:* `src/settings.py`, `src/twitch/auth.py`, `src/twitch/eventsub.py`, `src/orchestrator.py`, tests

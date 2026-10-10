@@ -294,3 +294,27 @@ async def mark_moment(orch, note: str) -> dict[str, str]:
             marker_error = str(e)
             log.info("stream marker skipped: %s", e)
     return {"note": text, "marker_error": marker_error}
+
+
+async def create_clip(orch) -> dict[str, str]:
+    client = orch.eventsub
+    scopes = getattr(client, "scopes", None) if client is not None else None
+    if scopes is not None and "clips:edit" not in scopes:
+        raise RuntimeError("missing scope clips:edit")
+    if not orch.settings.twitch_client_id:
+        raise RuntimeError("TWITCH_CLIENT_ID is required for clips")
+    if client is None or not getattr(client, "broadcaster_id", ""):
+        raise RuntimeError("EventSub is not connected, so the broadcaster id is unknown")
+    result = await _live("create_clip")(
+        orch.settings.event_token(),
+        orch.settings.twitch_client_id,
+        client.broadcaster_id,
+    )
+    clip_id = str(result.get("id") or "").strip()
+    url = str(result.get("edit_url") or "").strip()
+    note = url or clip_id
+    if note:
+        orch.memory.add_note(STREAMER_THREAD, note, is_streamer=True)
+        await orch.hub.broadcast({"type": "memory", "data": orch.memory.snapshot()})
+    await orch.hub.broadcast({"type": "log", "data": f"Clip {clip_id} {url}".strip()})
+    return {"id": clip_id, "edit_url": url}
