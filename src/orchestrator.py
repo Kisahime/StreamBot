@@ -5,7 +5,6 @@ import logging
 import time
 from collections import deque
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import yaml
@@ -59,18 +58,30 @@ EVENT_PRIORITY = {
 
 
 class Orchestrator:
-    def __init__(self, settings: Settings, hub: Hub, data_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        hub: Hub,
+        data_dir: Path | None = None,
+        *,
+        llm: OllamaClient | None = None,
+        tts: PiperTTS | None = None,
+        stt: SpeechToText | None = None,
+        mic: MicListener | None = None,
+        persona_path: Path | None = None,
+    ) -> None:
         self.settings = settings
         self.hub = hub
-        self.llm = OllamaClient(settings)
-        self.stt = SpeechToText(settings)
-        self.tts = PiperTTS(settings)
-        self.mic = MicListener(settings, self.on_utterance)
+        # Tests pass fakes so importing this class never has to open a mic, model, or speaker.
+        self.llm = OllamaClient(settings) if llm is None else llm
+        self.stt = SpeechToText(settings) if stt is None else stt
+        self.tts = PiperTTS(settings) if tts is None else tts
+        self.mic = MicListener(settings, self.on_utterance) if mic is None else mic
         self.duck = Duck(settings)
         self.data_dir = data_dir or (ROOT / "data")
-        self.twitch: Optional[TwitchChat] = None
-        self.eventsub: Optional[EventSubClient] = None
-        self.persona = load_persona()
+        self.twitch: TwitchChat | None = None
+        self.eventsub: EventSubClient | None = None
+        self.persona = load_persona(persona_path)
         self.identity: StreamerIdentity = load_identity(
             self.data_dir / "streamer.json",
             default_login=settings.twitch_channel,
@@ -106,9 +117,9 @@ class Orchestrator:
         self._speak_depth = 0
         self._event_pending: deque[StreamEvent] = deque(maxlen=40)
         self._follow_names: list[str] = []
-        self._follow_task: Optional[asyncio.Task] = None
+        self._follow_task: asyncio.Task | None = None
         self._cheers: list[StreamEvent] = []
-        self._cheer_task: Optional[asyncio.Task] = None
+        self._cheer_task: asyncio.Task | None = None
         self.tts_mute = self.booth.tts_mute
         self._want_twitch = False
         self._want_events = False
@@ -117,7 +128,7 @@ class Orchestrator:
         self._stopping = False
         self._irc_fatal = False
         self._eventsub_fatal = False
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._last_skip = {"reason": "", "user": ""}
         self._catchphrase_at: dict[str, float] = {}
         self._last_raider = ""
