@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import subprocess
 import sys
 import time
@@ -119,6 +120,7 @@ async def snapshot(settings: Settings, orch) -> dict[str, Any]:
             "snappy": "Whisper CUDA + qwen2.5:3b",
             "quality": "Whisper CPU + qwen2.5:7b-instruct-q4_K_M",
         },
+        "extras": extra_status(),
         "timings": getattr(orch, "timings", {}),
         "timings_p50": _timing_percentile(orch, 50),
         "timings_p95": _timing_percentile(orch, 95),
@@ -152,6 +154,14 @@ async def snapshot(settings: Settings, orch) -> dict[str, Any]:
             "max_replies_per_minute": settings.max_replies_per_minute,
         },
     }
+
+
+def extra_status() -> dict[str, str]:
+    """Whether the optional Windows extras are importable."""
+    status: dict[str, str] = {}
+    for name in ("pycaw", "openwakeword"):
+        status[name] = "installed" if importlib.util.find_spec(name) is not None else "not installed"
+    return status
 
 
 def _percentile(values: list[int], pct: float) -> int:

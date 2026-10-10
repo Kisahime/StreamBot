@@ -1,4 +1,5 @@
 server:
+  # server.host stays on localhost. IPv6 loopback is ::1; the booth also accepts Host: [::1]:port.
   host: 127.0.0.1
   port: 8080
   # The booth has no auth. Stay on localhost unless you set this true on purpose.
@@ -67,7 +68,8 @@ audio:
   barge_in: true
   echo_gate: true
   echo_gate_ratio: 2.5
-  # Local wake word via openwakeword. Off by default, and never the only way to talk.
+  # audio.wake_word uses openwakeword and never replaces hold-to-talk.
+  # audio.wake_models names the models. audio.wake_threshold is 0 to 1; raise it when a phrase false-triggers.
   wake_word: false
   wake_models:
     - hey_jarvis
