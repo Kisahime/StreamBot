@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -18,6 +19,12 @@ log = logging.getLogger("cohost.eventsub")
 
 WS_URL = "wss://eventsub.wss.twitch.tv/ws"
 HELIX = "https://api.twitch.tv/helix"
+KEEPALIVE_GRACE = 3.0
+
+
+def next_backoff(current: float) -> float:
+    """2s, 4s, 8s … capped at 60s."""
+    return min(60.0, max(2.0, float(current) * 2))
 
 SUBSCRIPTIONS = (
     ("channel.follow", "2"),
@@ -145,6 +152,7 @@ class EventSubClient:
         self.expires_in: int | None = None
         self.token_login = ""
         self.feed_status: dict[str, str] = {}
+        self.keepalive_timeout = 10.0
 
     def alive(self) -> bool:
         return bool(self.connected and self._task and not self._task.done())
@@ -206,12 +214,18 @@ class EventSubClient:
             self._ready.set()
         await self.on_status("disconnected")
 
+    def _jitter(self, seconds: float) -> float:
+        spread = float(seconds) * 0.2
+        return max(0.0, float(seconds) + random.uniform(-spread, spread))
+
     async def _run(self) -> None:
         url = WS_URL
+        backoff = 2.0
         while not self._stop:
             try:
-                next_url = await self._session(url)
-                url = next_url or WS_URL
+                await self._session(url)
+                url = WS_URL
+                backoff = 2.0
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -229,30 +243,54 @@ class EventSubClient:
                 url = WS_URL
             if self._stop or self.fatal:
                 break
-            await asyncio.sleep(2)
+            await asyncio.sleep(self._jitter(backoff))
+            backoff = next_backoff(backoff)
 
-    async def _session(self, url: str) -> str | None:
-        async with websockets.connect(url, ping_interval=20, ping_timeout=20, max_size=2**20) as ws:
-            self._ws = ws
-            reconnect: str | None = None
-            async for raw in ws:
-                if self._stop:
+    async def _session(self, url: str) -> None:
+        ws = await websockets.connect(url, ping_interval=20, ping_timeout=20, max_size=2**20)
+        self._ws = ws
+        try:
+            await self._read(ws, subscribe=True)
+        finally:
+            current = self._ws
+            self._ws = None
+            self.connected = False
+            for sock in (ws, current):
+                if sock is None:
+                    continue
+                try:
+                    await sock.close()
+                except Exception:
+                    pass
+
+    async def _read(self, ws, *, subscribe: bool) -> None:
+        keepalive = 10.0
+        while not self._stop:
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=keepalive + KEEPALIVE_GRACE)
+            except TimeoutError as err:
+                raise TimeoutError("EventSub keepalive timeout") from err
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            meta = data.get("metadata") or {}
+            payload = data.get("payload") or {}
+            mtype = meta.get("message_type") or ""
+            if mtype == "session_welcome":
+                session = payload.get("session") or {}
+                sid = session.get("id")
+                if not sid:
+                    self.last_error = "EventSub welcome had no session id"
+                    await self.on_status("error")
+                    self._ready.set()
                     break
                 try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                meta = data.get("metadata") or {}
-                payload = data.get("payload") or {}
-                mtype = meta.get("message_type") or ""
-                if mtype == "session_welcome":
-                    session = payload.get("session") or {}
-                    sid = session.get("id")
-                    if not sid:
-                        self.last_error = "EventSub welcome had no session id"
-                        await self.on_status("error")
-                        self._ready.set()
-                        break
+                    keepalive = float(session.get("keepalive_timeout_seconds") or keepalive)
+                except (TypeError, ValueError):
+                    keepalive = 10.0
+                self.keepalive_timeout = keepalive
+                if subscribe:
                     try:
                         await self._subscribe_all(sid)
                     except Exception as e:
@@ -264,33 +302,74 @@ class EventSubClient:
                         await self.on_status(status)
                         self._ready.set()
                         break
-                    self.connected = True
-                    self.last_error = None
-                    await self.on_status("connected")
-                    self._ready.set()
-                elif mtype == "session_reconnect":
-                    reconnect = (payload.get("session") or {}).get("reconnect_url")
-                    log.info("EventSub reconnect requested")
+                self.connected = True
+                self.last_error = None
+                await self.on_status("connected")
+                self._ready.set()
+            elif mtype == "session_reconnect":
+                new_url = (payload.get("session") or {}).get("reconnect_url")
+                log.info("EventSub reconnect requested")
+                if not new_url:
                     break
-                elif mtype == "session_keepalive":
+                await self._handover(ws, str(new_url))
+                return
+            elif mtype == "session_keepalive":
+                continue
+            elif mtype == "revocation":
+                await self._on_revocation(payload.get("subscription") or {})
+            elif mtype == "notification":
+                mid = meta.get("message_id") or ""
+                if mid and not self._remember(mid):
                     continue
-                elif mtype == "revocation":
-                    sub = payload.get("subscription") or {}
-                    log.warning("EventSub revoked %s: %s", sub.get("type"), sub.get("status"))
-                elif mtype == "notification":
-                    mid = meta.get("message_id") or ""
-                    if mid and not self._remember(mid):
-                        continue
-                    ev = _parse_notification(
-                        meta.get("subscription_type") or "",
-                        payload.get("event") or {},
-                        channel=self.channel,
-                    )
-                    if ev:
-                        await self.on_event(ev)
-            self._ws = None
-            self.connected = False
-            return reconnect
+                ev = _parse_notification(
+                    meta.get("subscription_type") or "",
+                    payload.get("event") or {},
+                    channel=self.channel,
+                )
+                if ev:
+                    await self.on_event(ev)
+
+    async def _handover(self, old_ws, new_url: str) -> None:
+        """Open the reconnect URL and wait for its welcome before closing the old socket."""
+        new_ws = await websockets.connect(new_url, ping_interval=20, ping_timeout=20, max_size=2**20)
+        try:
+            raw = await asyncio.wait_for(new_ws.recv(), timeout=10 + KEEPALIVE_GRACE)
+            data = json.loads(raw)
+        except Exception:
+            try:
+                await new_ws.close()
+            except Exception:
+                pass
+            raise
+        meta = data.get("metadata") or {}
+        if (meta.get("message_type") or "") != "session_welcome":
+            try:
+                await new_ws.close()
+            except Exception:
+                pass
+            raise RuntimeError("EventSub reconnect did not welcome")
+        session = (data.get("payload") or {}).get("session") or {}
+        try:
+            self.keepalive_timeout = float(session.get("keepalive_timeout_seconds") or 10)
+        except (TypeError, ValueError):
+            self.keepalive_timeout = 10.0
+        try:
+            await old_ws.close()
+        except Exception:
+            pass
+        self._ws = new_ws
+        self.connected = True
+        await self.on_status("connected")
+        await self._read(new_ws, subscribe=False)
+
+    async def _on_revocation(self, sub: dict) -> None:
+        subtype = str(sub.get("type") or "")
+        status = str(sub.get("status") or "revoked")
+        feed = feed_for(subtype) if subtype else ""
+        if feed:
+            self.feed_status[feed] = f"revoked {status}"
+        log.warning("EventSub revoked %s: %s", subtype, status)
+        await self.on_status("revoked")
 
     def _remember(self, mid: str) -> bool:
         if mid in self._seen_set:

@@ -82,9 +82,13 @@ class Orchestrator:
         self.llm = OllamaClient(settings) if llm is None else llm
         self.stt = SpeechToText(settings) if stt is None else stt
         self.tts = PiperTTS(settings) if tts is None else tts
-        self.mic = MicListener(settings, self.on_utterance) if mic is None else mic
-        self.duck = Duck(settings)
+        self.mic = (
+            MicListener(settings, self.on_utterance, speaking=self._tts_speaking, on_barge=self._barge_in)
+            if mic is None
+            else mic
+        )
         self.data_dir = data_dir or (ROOT / "data")
+        self.duck = Duck(settings, data_dir=self.data_dir)
         self.twitch: TwitchChat | None = None
         self.eventsub: EventSubClient | None = None
         self.persona_path = persona_path or (ROOT / "persona.yaml")
@@ -109,7 +113,7 @@ class Orchestrator:
             retention_days=settings.retention_days,
         )
         self.memory.set_streamer_display(self.identity.spoken_name())
-        self.spoken: deque[tuple[str, str]] = deque(maxlen=settings.spoken_turns)
+        self.memory.set_cohost_name(self._cohost_name())
         self._voice_gen = 0
         self._voice_cancel = asyncio.Event()
         self._chat_pending: deque[ChatLine] = deque(maxlen=60)
@@ -117,6 +121,8 @@ class Orchestrator:
         self._last_chat_reply = 0.0
         self._user_reply_at: dict[str, float] = {}
         self._tasks: list[asyncio.Task] = []
+        self._bg: set[asyncio.Task] = set()
+        self._ollama_interval = 30.0
         self._chat_q: asyncio.Queue[int] = asyncio.Queue()
         self._event_q: asyncio.Queue[int] = asyncio.Queue()
         self._chat_scheduled = False
@@ -155,7 +161,32 @@ class Orchestrator:
         extra = f"\n{addon}\n" if addon else ""
         self.voice_prompt = build_voice_prompt(self.persona, streamer) + extra
         self.chat_prompt = build_chat_prompt(self.persona, streamer) + extra
-        self.system_prompt = self.voice_prompt
+        if getattr(self, "memory", None) is not None:
+            self.memory.set_cohost_name(self._cohost_name())
+
+    def _cohost_name(self) -> str:
+        return str(self.persona.get("name") or "Cohost")
+
+    def _tts_speaking(self) -> bool:
+        return bool(getattr(self.tts, "speaking", False))
+
+    def _barge_in(self) -> None:
+        self._spawn(self.interrupt(), "barge-in")
+
+    def _spawn(self, coro, name: str | None = None) -> asyncio.Task:
+        task = asyncio.create_task(coro, name=name)
+        self._bg.add(task)
+        task.add_done_callback(self._on_bg_done)
+        return task
+
+    def _on_bg_done(self, task: asyncio.Task) -> None:
+        self._bg.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            return
+        log.error("background task %s failed", task.get_name(), exc_info=exc)
 
     def _phrases(self) -> list[str]:
         raw = self.persona.get("catchphrases") or []
@@ -188,15 +219,17 @@ class Orchestrator:
             mood=self.mood,
             duck=self.duck.mode,
         )
+        await self._resolve_audio_devices()
         self._tasks = [
-            loop.create_task(self._load_models(), name="load-models"),
-            loop.create_task(self._chat_worker(), name="chat-worker"),
-            loop.create_task(self._event_worker(), name="event-worker"),
-            loop.create_task(self._chat_scan_loop(), name="chat-scan"),
-            loop.create_task(self._twitch_watchdog(), name="twitch-watch"),
-            loop.create_task(self._memory_flush_loop(), name="memory-flush"),
-            loop.create_task(self._memory_prune_loop(), name="memory-prune"),
-            loop.create_task(self._level_loop(), name="mic-level"),
+            self._spawn(self._load_models(), "load-models"),
+            self._spawn(self._chat_worker(), "chat-worker"),
+            self._spawn(self._event_worker(), "event-worker"),
+            self._spawn(self._chat_scan_loop(), "chat-scan"),
+            self._spawn(self._twitch_watchdog(), "twitch-watch"),
+            self._spawn(self._memory_flush_loop(), "memory-flush"),
+            self._spawn(self._memory_prune_loop(), "memory-prune"),
+            self._spawn(self._level_loop(), "mic-level"),
+            self._spawn(self._ollama_watch(), "ollama-watch"),
         ]
         try:
             self.mic.start(loop)
@@ -258,13 +291,14 @@ class Orchestrator:
                 via="event",
                 thread=STREAMER_THREAD,
             )
-        for task in self._tasks:
+        for task in list(self._bg):
             task.cancel()
-        for task in self._tasks:
+        for task in list(self._bg):
             try:
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
+        self._bg.clear()
         self._tasks.clear()
         await self.mic.stop()
         if self.eventsub:
@@ -287,38 +321,40 @@ class Orchestrator:
         self._refresh_prompts()
         if self.twitch:
             self.twitch.set_allow_from([self.identity.login_key()] if self.identity.login_key() else [])
-        asyncio.create_task(
+        self._spawn(
             self.hub.patch_status(
                 streamer_name=self.identity.spoken_name(),
                 streamer_login=self.identity.twitch_login,
-            )
+            ),
+            "identity-status",
         )
-        asyncio.create_task(
+        self._spawn(
             self.hub.broadcast(
                 {"type": "log", "data": f"Streamer is {self.identity.spoken_name()} (@{self.identity.twitch_login or '?'})"}
-            )
+            ),
+            "identity-log",
         )
         return self.identity
 
     def forget_viewer(self, login: str) -> None:
         self.memory.forget(login)
         self.memory.flush()
-        asyncio.create_task(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}))
+        self._spawn(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}), "memory")
 
     def clear_memory(self) -> None:
         self.memory.clear()
-        self.spoken.clear()
         self._user_reply_at.clear()
-        asyncio.create_task(self.hub.broadcast({"type": "log", "data": "Memory cleared"}))
-        asyncio.create_task(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}))
+        self._spawn(self.hub.broadcast({"type": "log", "data": "Memory cleared"}), "memory-cleared")
+        self._spawn(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}), "memory")
 
     def reload_persona(self) -> None:
         self.persona = load_persona(self.persona_path)
         self._refresh_prompts()
         try:
-            asyncio.get_running_loop().create_task(self._after_persona_reload())
+            asyncio.get_running_loop()
         except RuntimeError:
             return
+        self._spawn(self._after_persona_reload(), "persona-reload")
 
     def save_persona_text(self, text: str) -> str:
         data = validate_persona_text(text)
@@ -399,12 +435,27 @@ class Orchestrator:
             },
         )
 
-    async def set_devices(self, mic_device: int | None, speaker_device: int | None) -> None:
+    async def set_devices(
+        self,
+        mic_device: int | None,
+        speaker_device: int | None,
+        mic_name: str | None = None,
+        speaker_name: str | None = None,
+    ) -> None:
         self.settings.mic_device = mic_device
         self.settings.speaker_device = speaker_device
+        if mic_name is not None:
+            self.settings.mic_device_name = mic_name or None
+        if speaker_name is not None:
+            self.settings.speaker_device_name = speaker_name or None
         await asyncio.to_thread(
             update_config,
-            {"audio.mic_device": mic_device, "audio.speaker_device": speaker_device},
+            {
+                "audio.mic_device": mic_device,
+                "audio.speaker_device": speaker_device,
+                "audio.mic_device_name": self.settings.mic_device_name,
+                "audio.speaker_device_name": self.settings.speaker_device_name,
+            },
         )
         if self._loop is None:
             return
@@ -639,12 +690,12 @@ class Orchestrator:
                 return
             self._follow_names.extend(event.people())
             if not self._follow_task or self._follow_task.done():
-                self._follow_task = asyncio.create_task(self._flush_follows(), name="follow-batch")
+                self._follow_task = self._spawn(self._flush_follows(), "follow-batch")
             return
         if event.kind == "cheer":
             self._cheers.append(event)
             if not self._cheer_task or self._cheer_task.done():
-                self._cheer_task = asyncio.create_task(self._flush_cheers(), name="cheer-batch")
+                self._cheer_task = self._spawn(self._flush_cheers(), "cheer-batch")
             return
         self._event_pending.append(event)
         self._kick_events()
@@ -755,12 +806,12 @@ class Orchestrator:
         reward_input = str(event.extra.get("input") or "")
         if event.kind == "redeem" and is_blocked(reward_input):
             self.memory.remember("twitch_event", primary, "[skipped topic]", via="event", thread=thread)
-            asyncio.create_task(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}))
+            self._spawn(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}), "memory")
             await self._emit_cohost(DEFLECT, thread=thread, speak=False, post=self.settings.events_post_to_chat)
             return
         scene = event.scene()
         self.memory.remember("twitch_event", primary, scene, via="event", thread=thread)
-        asyncio.create_task(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}))
+        self._spawn(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}), "memory")
         delivery = str(event.extra.get("delivery") or ("speak" if self.settings.events_speak else "chat"))
         if delivery == "ignore":
             return
@@ -825,12 +876,12 @@ class Orchestrator:
         chat_text = self._chat_text(reply)
         self.memory.remember(
             "cohost_voice" if speak else "cohost_chat",
-            str(self.persona.get("name") or "Pixel"),
+            self._cohost_name(),
             spoken if speak else chat_text,
             via="voice" if speak else "chat",
             thread=thread,
         )
-        asyncio.create_task(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}))
+        self._spawn(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}), "memory")
         await self.hub.broadcast({"type": "transcript", "data": {"role": "cohost", "text": spoken}})
         if post and self.twitch and self.twitch.connected:
             if not chat_text:
@@ -880,7 +931,7 @@ class Orchestrator:
                     "data": {"user": name, "text": line.text, "mention": line.mention, "streamer": True},
                 }
             )
-            asyncio.create_task(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}))
+            self._spawn(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}), "memory")
             self._chat_pending.append(line)
             self._kick_chat()
             return
@@ -888,7 +939,7 @@ class Orchestrator:
         stored = "[skipped topic]" if is_blocked(line.text) else line.text
         self.memory.remember("viewer", line.user, stored, via="chat", thread=self.memory.viewer_thread_key(line.user))
         await self.hub.broadcast({"type": "chat", "data": {"user": line.user, "text": line.text, "mention": line.mention}})
-        asyncio.create_task(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}))
+        self._spawn(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}), "memory")
         await self._publish_queue()
         self._kick_chat()
 
@@ -901,7 +952,7 @@ class Orchestrator:
                 await self.hub.broadcast({"type": "log", "data": "Whisper is still loading or failed to load."})
                 return
             sr = self.settings.sample_rate
-            clipped = trim_to_speech(audio, sr)
+            clipped = await asyncio.to_thread(trim_to_speech, audio, sr)
             await self.hub.patch_status(phase="thinking", speaking=False)
             try:
                 text = await asyncio.to_thread(self.stt.transcribe, clipped)
@@ -1004,8 +1055,6 @@ class Orchestrator:
             reply = DEFLECT
             if gen != self._voice_gen:
                 return
-            self.spoken.append(("user", f"{name} (mic): [skipped topic]"))
-            self.spoken.append(("assistant", reply))
             if not self.tts_mute:
                 await self.hub.patch_status(phase="speaking", speaking=True, caption=reply)
                 await self._speak(reply)
@@ -1060,8 +1109,6 @@ class Orchestrator:
             return
         if gen != self._voice_gen:
             return
-        self.spoken.append(("user", f"{name} (mic): {user_text}"))
-        self.spoken.append(("assistant", reply))
         await self._emit_voice_result(name, user_text, reply, gen, started, post=True)
 
     async def _emit_voice_result(self, name: str, user_text: str, reply: str, gen: int, started: float, post: bool) -> None:
@@ -1069,12 +1116,12 @@ class Orchestrator:
             return
         self.memory.remember(
             "cohost_voice",
-            str(self.persona.get("name") or "Pixel"),
+            self._cohost_name(),
             reply,
             via="voice",
             thread=STREAMER_THREAD,
         )
-        asyncio.create_task(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}))
+        self._spawn(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}), "memory")
         await self.hub.broadcast({"type": "transcript", "data": {"role": "cohost", "text": reply}})
         if post and self.settings.post_voice_replies_to_chat and self.twitch and self.twitch.connected:
             if gen != self._voice_gen:
@@ -1089,7 +1136,7 @@ class Orchestrator:
                     self.timings["chat_send_ms"] = int((time.perf_counter() - t0) * 1000)
                     self.memory.remember(
                         "cohost_chat",
-                        str(self.persona.get("name") or "Pixel"),
+                        self._cohost_name(),
                         short,
                         via="chat",
                         thread=STREAMER_THREAD,
@@ -1159,7 +1206,24 @@ class Orchestrator:
             except Exception:
                 log.exception("chat worker failed")
 
+    async def _expire_stale_chat(self) -> None:
+        limit = self.settings.chat_max_age_seconds
+        if limit <= 0 or not self._chat_pending:
+            return
+        now = time.monotonic()
+        kept: deque[ChatLine] = deque(maxlen=self._chat_pending.maxlen)
+        for line in list(self._chat_pending):
+            age = now - float(getattr(line, "ts", now))
+            exempt = self.identity.is_login(line.user) or bool(line.command)
+            if age > limit and not exempt:
+                await self._note_skip("stale", line.user)
+                continue
+            kept.append(line)
+        self._chat_pending.clear()
+        self._chat_pending.extend(kept)
+
     async def _drain_chat(self) -> None:
+        await self._expire_stale_chat()
         while self._chat_pending and not self._stopping:
             if self._busy_voice or self._event_pending:
                 reason = "busy on mic" if self._busy_voice else "alert queued"
@@ -1247,11 +1311,16 @@ class Orchestrator:
             reply = DEFLECT
             action = "chat"
         else:
-            reply = self._clean(await self._persona_chat_reply(line, ambient=action != "speak"))
+            try:
+                reply = self._clean(await self._persona_chat_reply(line, ambient=action != "speak"))
+                if self._reply_is_bad(reply, previous, recent):
+                    reply = self._clean(await self._persona_chat_reply(line, ambient=action != "speak", retry=True))
+            except TimeoutError:
+                await self._note_skip("llm timeout", line.user)
+                await self.hub.patch_status(phase="listening" if self.mic.listen_enabled else "idle")
+                return
             if self._reply_is_bad(reply, previous, recent):
-                reply = self._clean(await self._persona_chat_reply(line, ambient=action != "speak", retry=True))
-            if self._reply_is_bad(reply, previous, recent):
-                fallback = streamer_smalltalk_fallback(line.text) if streamer else ""
+                fallback = streamer_smalltalk_fallback(line.text, self._cohost_name()) if streamer else ""
                 if not fallback:
                     await self._note_skip("filler rejected", line.user)
                     await self.hub.broadcast({"type": "log", "data": f"Chat skip ({line.user}): {line.text[:80]}"})
@@ -1274,7 +1343,7 @@ class Orchestrator:
         self._mark_reply(line.user)
         self.memory.remember(
             "cohost_chat",
-            str(self.persona.get("name") or "Pixel"),
+            self._cohost_name(),
             chat_text,
             via="chat",
             thread=thread_key,
@@ -1282,7 +1351,7 @@ class Orchestrator:
         self.memory.note_reply_to(line.user, chat_text, thread=thread_key)
         if not streamer:
             self.memory.mark_greeted(line.user)
-        asyncio.create_task(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}))
+        self._spawn(self.hub.broadcast({"type": "memory", "data": self.memory.snapshot()}), "memory")
         await self.hub.broadcast({"type": "transcript", "data": {"role": "cohost", "text": spoken, "chat": chat_text}})
         await self.hub.broadcast({"type": "chat", "data": {"user": self.persona.get("name"), "text": chat_text, "bot": True}})
         if self.twitch and self.twitch.connected:
@@ -1339,7 +1408,16 @@ class Orchestrator:
                 ),
             },
         ]
-        text = self._clean(await self.llm.complete(messages, temperature=mood_temperature(self.mood) if not retry else 0.9))
+        try:
+            text = self._clean(
+                await asyncio.wait_for(
+                    self.llm.complete(messages, temperature=mood_temperature(self.mood) if not retry else 0.9),
+                    timeout=self.settings.chat_timeout_seconds,
+                )
+            )
+        except TimeoutError:
+            self.llm.last_error = "llm timeout"
+            raise
         if not text:
             return ""
         target = None if self.identity.is_login(line.user) else line.user
@@ -1445,12 +1523,51 @@ class Orchestrator:
             except Exception:
                 log.exception("memory flush failed")
 
+    async def _resolve_audio_devices(self) -> None:
+        from src.audio.devices import list_devices, match_device
+
+        try:
+            devices = await asyncio.to_thread(list_devices)
+        except Exception:
+            log.exception("device resolve failed")
+            return
+        self.settings.mic_device = match_device(
+            list(devices.get("inputs") or []),
+            self.settings.mic_device,
+            self.settings.mic_device_name,
+        )
+        self.settings.speaker_device = match_device(
+            list(devices.get("outputs") or []),
+            self.settings.speaker_device,
+            self.settings.speaker_device_name,
+        )
+
+    async def _ollama_watch(self) -> None:
+        while not self._stopping:
+            try:
+                await asyncio.sleep(self._ollama_interval)
+                if self._stopping:
+                    return
+                health = await self.llm.health()
+                await self.hub.patch_status(ollama="ok" if health.get("ok") else "down")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("ollama watch failed")
+
     async def _level_loop(self) -> None:
         while not self._stopping:
             try:
                 await asyncio.sleep(0.2)
                 if self.mic.listen_enabled or self.mic.ptt_down:
-                    await self.hub.broadcast({"type": "level", "data": round(float(self.mic.level), 4)})
+                    wake = getattr(self.mic, "wake", None)
+                    score = float(getattr(self.mic, "wake_score", getattr(wake, "score", 0.0)) or 0.0)
+                    await self.hub.broadcast(
+                        {
+                            "type": "level",
+                            "data": {"level": round(float(self.mic.level), 4), "wake": round(score, 4)},
+                        }
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception:

@@ -129,7 +129,8 @@ class PiperTTS:
         self.model: Path | None = None
         self.sample_rate = 22050
         self._play_lock = asyncio.Lock()
-        self._cancel = asyncio.Event()
+        self._gen = 0
+        self._output = None
         self.ready = False
         self.error: str | None = None
         self.speaking = False
@@ -183,7 +184,25 @@ class PiperTTS:
             self.error = "piper.exe not found after download"
 
     def interrupt(self) -> None:
-        self._cancel.set()
+        self._gen += 1
+        self._stop_output()
+
+    def _stop_output(self) -> None:
+        stream = self._output
+        self._output = None
+        if stream is not None:
+            try:
+                abort = getattr(stream, "abort", None)
+                if abort:
+                    abort()
+                else:
+                    stream.stop()
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                pass
         try:
             sd.stop()
         except Exception:
@@ -312,31 +331,33 @@ class PiperTTS:
         if not self.ready or not self.exe or not self.model:
             log.warning("TTS not ready: %s", self.error)
             return
-        self._cancel.clear()
+        gen = self._gen
         async with self._play_lock:
-            if self._cancel.is_set():
+            if gen != self._gen:
                 return
             self.speaking = True
             try:
-                audio, sr = await asyncio.to_thread(self._synth, text)
-                if self._cancel.is_set() or audio.size == 0:
+                audio, sr = await asyncio.to_thread(self._synth, text, gen)
+                if gen != self._gen or audio.size == 0:
                     return
-                await asyncio.to_thread(self._play, audio, sr)
+                await asyncio.to_thread(self._play, audio, sr, gen)
             finally:
                 self.speaking = False
 
-    def _synth(self, text: str) -> tuple[np.ndarray, int]:
+    def _synth(self, text: str, gen: int | None = None) -> tuple[np.ndarray, int]:
+        if gen is None:
+            gen = self._gen
         text = (text or "").strip()[: self.settings.max_sentence_chars]
         if not text:
             return np.zeros(0, dtype=np.float32), self.sample_rate
         self._maybe_retry_persistent()
         if self._json_input:
-            audio = self._synth_persistent(text)
+            audio = self._synth_persistent(text, gen)
             if audio is not None:
                 return audio
         return self._synth_oneshot(text)
 
-    def _synth_persistent(self, text: str) -> tuple[np.ndarray, int] | None:
+    def _synth_persistent(self, text: str, gen: int) -> tuple[np.ndarray, int] | None:
         if not self._proc_alive():
             self._stdout_q = queue.Queue()
             self._proc = self._spawn()
@@ -362,7 +383,7 @@ class PiperTTS:
             return None
         deadline = time.monotonic() + self._persistent_timeout
         while time.monotonic() < deadline:
-            if self._cancel.is_set():
+            if gen != self._gen:
                 try:
                     os.unlink(out_path)
                 except OSError:
@@ -448,8 +469,27 @@ class PiperTTS:
         self.sample_rate = sr
         return audio, sr
 
-    def _play(self, audio: np.ndarray, sr: int) -> None:
-        if self._cancel.is_set():
+    def _play(self, audio: np.ndarray, sr: int, gen: int | None = None) -> None:
+        if gen is None:
+            gen = self._gen
+        if gen != self._gen or audio.size == 0:
             return
-        sd.play(audio, sr, device=self.settings.speaker_device, blocking=True)
-        sd.wait()
+        stream = sd.OutputStream(
+            samplerate=sr,
+            channels=1,
+            dtype="float32",
+            device=self.settings.speaker_device,
+        )
+        self._output = stream
+        try:
+            stream.start()
+            frame = max(1, int(sr * 0.05))
+            pos = 0
+            while pos < audio.size:
+                if gen != self._gen:
+                    break
+                stream.write(audio[pos : pos + frame])
+                pos += frame
+        finally:
+            if self._output is stream:
+                self._stop_output()

@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from typing import Any
 
 from fastapi import WebSocket
+
+log = logging.getLogger("cohost.hub")
+MEMORY_INTERVAL = 0.5
 
 
 class Hub:
@@ -35,6 +40,9 @@ class Hub:
             "eventsub_error": "",
             "duck": "off",
         }
+        self._memory_pending: dict[str, Any] | None = None
+        self._memory_task: asyncio.Task | None = None
+        self._memory_sent_at = 0.0
 
     async def register(self, ws: WebSocket) -> None:
         async with self._lock:
@@ -49,6 +57,35 @@ class Hub:
         await self.broadcast({"type": "status", "data": dict(self.status)})
 
     async def broadcast(self, event: dict[str, Any]) -> None:
+        if event.get("type") == "memory":
+            self._queue_memory(event)
+            return
+        await self._send(event)
+
+    def _queue_memory(self, event: dict[str, Any]) -> None:
+        """Keep at most two memory snapshots per second. Newer ones replace a pending send."""
+        self._memory_pending = event
+        if self._memory_task is not None and not self._memory_task.done():
+            return
+        self._memory_task = asyncio.create_task(self._drain_memory(), name="memory-broadcast")
+
+    async def _drain_memory(self) -> None:
+        try:
+            while self._memory_pending is not None:
+                event = self._memory_pending
+                self._memory_pending = None
+                wait = MEMORY_INTERVAL - (time.monotonic() - self._memory_sent_at)
+                if self._memory_sent_at and wait > 0:
+                    await asyncio.sleep(wait)
+                    if self._memory_pending is not None:
+                        event = self._memory_pending
+                        self._memory_pending = None
+                await self._send(event)
+                self._memory_sent_at = time.monotonic()
+        except Exception:
+            log.exception("memory broadcast failed")
+
+    async def _send(self, event: dict[str, Any]) -> None:
         payload = json.dumps(event, ensure_ascii=False)
         async with self._lock:
             clients = list(self._clients)

@@ -33,3 +33,13 @@ def list_devices() -> dict[str, list[dict[str, Any]]]:
         "default_input": default_in,
         "default_output": default_out,
     }
+
+
+def match_device(devices: list[dict[str, Any]], index, name: str | None):
+    """Prefer a saved device name when the index has moved."""
+    wanted = (name or "").strip()
+    if wanted:
+        for dev in devices:
+            if str(dev.get("name") or "") == wanted:
+                return dev.get("index")
+    return index

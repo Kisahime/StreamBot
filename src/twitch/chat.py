@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -34,6 +35,7 @@ class ChatLine:
     command: str = ""
     is_mod: bool = False
     is_broadcaster: bool = False
+    ts: float = field(default_factory=time.monotonic)
 
     def render(self) -> str:
         return f"{self.user}: {self.text}"
@@ -42,6 +44,14 @@ class ChatLine:
         if self.mention:
             return True
         return bool(ENGAGE_RE.search(self.text or ""))
+
+
+def text_mentions(text: str, name: str) -> bool:
+    """True when ``name`` is a whole word, with or without a leading @."""
+    name = (name or "").strip().lstrip("@")
+    if not name:
+        return False
+    return re.search(rf"(?<![A-Za-z0-9_])@?{re.escape(name)}(?![A-Za-z0-9_])", text or "", re.I) is not None
 
 
 def normalize_token(token: str) -> str:
@@ -178,7 +188,7 @@ class TwitchChat:
                         return
                 elif is_spammy(content):
                     return
-                mention = any(n in content.lower() for n in parent.bot_names)
+                mention = any(text_mentions(content, n) for n in parent.bot_names)
                 is_mod, is_broadcaster = author_flags(message.author)
                 line = ChatLine(
                     user=author,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 
@@ -15,23 +16,42 @@ from src.settings import Settings
 log = logging.getLogger("cohost.mic")
 
 UtteranceHandler = Callable[[np.ndarray], Awaitable[None]]
+SpeakingProbe = Callable[[], bool]
+BargeHandler = Callable[[], None]
+QUEUE_MAX = 200
+ECHO_TAIL_SECONDS = 0.3
 
 
 class MicListener:
-    def __init__(self, settings: Settings, on_utterance: UtteranceHandler) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        on_utterance: UtteranceHandler,
+        *,
+        speaking: SpeakingProbe | None = None,
+        on_barge: BargeHandler | None = None,
+    ) -> None:
         self.settings = settings
         self.on_utterance = on_utterance
+        self._speaking = speaking or (lambda: False)
+        self.on_barge = on_barge
         self.listen_enabled = False
         self.ptt_down = False
         self._stream: sd.InputStream | None = None
-        self._queue: asyncio.Queue[np.ndarray] = asyncio.Queue()
+        self._queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=QUEUE_MAX)
         self._task: asyncio.Task | None = None
+        self._utterance_task: asyncio.Task | None = None
+        self._wake_task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self.level = 0.0
         self.wake = WakeWord(settings)
+        self.wake_score = 0.0
         self._wake_buf: deque[np.ndarray] = deque()
         self._wake_samples = 0
         self._wake_latch = False
+        self._spoke_at = 0.0
+        self._barge_sent = False
+        self._wake_used = False
 
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
@@ -44,7 +64,7 @@ class MicListener:
             chunk = np.copy(indata[:, 0]).astype(np.float32)
             if self._loop:
                 try:
-                    self._loop.call_soon_threadsafe(self._queue.put_nowait, chunk)
+                    self._loop.call_soon_threadsafe(self._enqueue, chunk)
                 except RuntimeError:
                     pass
 
@@ -59,14 +79,32 @@ class MicListener:
         self._stream.start()
         self._task = loop.create_task(self._run(), name="mic-listener")
 
-    async def stop(self) -> None:
-        if self._task:
-            self._task.cancel()
+    def _enqueue(self, chunk: np.ndarray) -> None:
+        queue = self._queue
+        if queue.full():
             try:
-                await self._task
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            queue.put_nowait(chunk)
+        except asyncio.QueueFull:
+            pass
+
+    async def stop(self) -> None:
+        for task in (self._utterance_task, self._wake_task, self._task):
+            if task and not task.done():
+                task.cancel()
+        for task in (self._utterance_task, self._wake_task, self._task):
+            if task is None:
+                continue
+            try:
+                await task
             except asyncio.CancelledError:
                 pass
-            self._task = None
+        self._utterance_task = None
+        self._wake_task = None
+        self._task = None
         if self._stream:
             self._stream.stop()
             self._stream.close()
@@ -77,6 +115,53 @@ class MicListener:
 
     def set_ptt(self, down: bool) -> None:
         self.ptt_down = down
+
+    def _echo_allows(self, level: float) -> bool:
+        if not self.settings.echo_gate:
+            return True
+        now = time.monotonic()
+        speaking = bool(self._speaking())
+        if speaking:
+            self._spoke_at = now
+        gated = speaking or (now - self._spoke_at) < ECHO_TAIL_SECONDS
+        if not gated:
+            return True
+        if self.ptt_down:
+            return True
+        return level >= self.settings.energy_threshold * self.settings.echo_gate_ratio
+
+    def _request_barge(self) -> None:
+        if self._barge_sent or not self.settings.barge_in:
+            return
+        if not self._speaking():
+            return
+        self._barge_sent = True
+        if self.on_barge is not None:
+            self.on_barge()
+
+    async def _score_wake(self, audio: np.ndarray) -> None:
+        try:
+            score, heard = await asyncio.to_thread(self.wake.evaluate, audio)
+        except Exception:
+            log.exception("wake score failed")
+            return
+        self.wake_score = score
+        if heard:
+            self._wake_latch = True
+
+    def _schedule_utterance(self, audio: np.ndarray) -> None:
+        previous = self._utterance_task
+        if previous is not None and not previous.done():
+            previous.cancel()
+        self._utterance_task = asyncio.create_task(self._deliver(audio), name="utterance")
+
+    async def _deliver(self, audio: np.ndarray) -> None:
+        try:
+            await self.on_utterance(audio)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("utterance handler failed")
 
     async def _run(self) -> None:
         sr = self.settings.sample_rate
@@ -93,20 +178,21 @@ class MicListener:
             silence_needed = int(sr * (self.settings.silence_ms / 1000.0))
             min_len = int(sr * (self.settings.min_utterance_ms / 1000.0))
             max_len = int(sr * self.settings.max_utterance_seconds)
-            armed = self.listen_enabled or self.ptt_down or self._wake_latch
             wake_hit = False
+            if self._wake_latch and not self._wake_used:
+                self._wake_used = True
+                wake_hit = True
+            armed = self.listen_enabled or self.ptt_down or self._wake_latch or wake_hit
             if not armed and self.wake.model is not None:
                 self._wake_buf.append(chunk)
                 self._wake_samples += len(chunk)
                 while self._wake_samples > wake_need * 4 and self._wake_buf:
                     dropped = self._wake_buf.popleft()
                     self._wake_samples -= len(dropped)
-                if self._wake_samples >= wake_need and self.wake.heard(np.concatenate(list(self._wake_buf))):
-                    self._wake_latch = True
-                    armed = True
-                    wake_hit = True
-                    self._wake_buf.clear()
-                    self._wake_samples = 0
+                ready = self._wake_samples >= wake_need and (self._wake_task is None or self._wake_task.done())
+                if ready:
+                    audio = np.concatenate(list(self._wake_buf))
+                    self._wake_task = asyncio.create_task(self._score_wake(audio), name="wake-score")
 
             if not armed:
                 if capturing and captured >= min_len:
@@ -118,9 +204,11 @@ class MicListener:
                 ptt_was_down = self.ptt_down
                 continue
 
-            energy_hit = self.level >= self.settings.energy_threshold
+            raw_energy = self.level >= self.settings.energy_threshold
+            energy_hit = raw_energy and self._echo_allows(self.level)
             if not capturing:
                 if self.ptt_down or energy_hit or wake_hit:
+                    self._request_barge()
                     capturing = True
                     buf.clear()
                     buf.append(chunk)
@@ -131,7 +219,7 @@ class MicListener:
 
             buf.append(chunk)
             captured += len(chunk)
-            if energy_hit:
+            if energy_hit or (self.ptt_down and raw_energy):
                 silent = 0
             else:
                 silent += len(chunk)
@@ -149,6 +237,8 @@ class MicListener:
 
             if ended:
                 self._wake_latch = False
+                self._wake_used = False
+                self._barge_sent = False
                 await self._flush(buf, captured, sr)
                 capturing = False
                 buf.clear()
@@ -162,9 +252,11 @@ class MicListener:
         audio = np.concatenate(list(buf)) if buf else np.zeros(0, dtype=np.float32)
         if audio.size < min_len:
             return
-        if not has_speech_silero(audio, sr) and rms(audio) < self.settings.energy_threshold:
-            return
         try:
-            await self.on_utterance(audio)
+            speech = await asyncio.to_thread(has_speech_silero, audio, sr)
         except Exception:
-            log.exception("utterance handler failed")
+            log.exception("silero check failed")
+            speech = False
+        if not speech and rms(audio) < self.settings.energy_threshold:
+            return
+        self._schedule_utterance(audio)

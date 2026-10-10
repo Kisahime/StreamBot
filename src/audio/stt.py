@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 
 import numpy as np
 
@@ -55,8 +56,13 @@ class SpeechToText:
         self.device = "cpu"
         self.compute_type = "int8"
         self.error: str | None = None
+        self._lock = threading.Lock()
 
     def load(self) -> None:
+        with self._lock:
+            self._load_unlocked()
+
+    def _load_unlocked(self) -> None:
         from faster_whisper import WhisperModel
 
         ensure_cuda_dlls()
@@ -90,6 +96,10 @@ class SpeechToText:
         self.compute_type = self.settings.compute_type_cpu
 
     def transcribe(self, audio: np.ndarray) -> str:
+        with self._lock:
+            return self._transcribe_unlocked(audio)
+
+    def _transcribe_unlocked(self, audio: np.ndarray) -> str:
         if self.model is None:
             return ""
         if audio.dtype != np.float32:

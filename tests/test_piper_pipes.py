@@ -51,7 +51,7 @@ def _ready(settings, directory: Path):
     tts.ready = True
     tts.settings.tts_enabled = True
     tts.settings.tts_mute = False
-    tts._play = lambda audio, sr: None
+    tts._play = lambda audio, sr, gen=None: None
     return tts
 
 
