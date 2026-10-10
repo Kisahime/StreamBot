@@ -137,21 +137,21 @@ Phases:
   - *Acceptance:* `git status --short` is empty apart from `PLAN-v2.md`. GitHub shows the new commits.
   - *Depends on:* none
 
-- [ ] **V0-02: Make the tests hermetic**
+- [x] **V0-02: Make the tests hermetic**
   - *Why:* tests read your real config and `.env` and build real audio and TTS objects. Fixes: N-25.
   - *Files:* create `tests/conftest.py`; edit `tests/test_orchestrator_policy.py`, `src/orchestrator.py` (optional dependency injection)
   - *Do:* add a `settings` fixture that builds `Settings({...})` from a dict, with fake token strings set via `monkeypatch.setenv`. Add fixtures that stub `sounddevice` in `sys.modules` (and `faster_whisper` if needed). Let `Orchestrator.__init__` accept optional `llm`, `tts`, `stt` and `mic` arguments (defaulting to the real ones) so tests don't construct hardware classes. Point `persona` at `tests/fixtures/persona.yaml`.
   - *Acceptance:* `pytest -q` passes with `.env` renamed away, and on a machine with no audio device. No test writes outside `tmp_path`.
   - *Depends on:* V0-01
 
-- [ ] **V0-03: Pin what the app installs**
+- [x] **V0-03: Pin what the app installs**
   - *Why:* `requirements.txt` is all `>=`, and the lock file isn't used. Fixes: N-07, F-33.
   - *Files:* `requirements.txt`, `requirements.lock.txt` → split into `requirements.txt` (pinned runtime) and `requirements-dev.txt` (`pytest`, `ruff`, `-r requirements.txt`), and `README.md`
   - *Do:* pin runtime packages to the versions in the current lock (`fastapi==0.141.1`, `uvicorn[standard]==0.52.4`, `twitchio==2.10.0`, `faster-whisper==1.2.1`, `ctranslate2==4.8.2`, `numpy==2.4.6`, `sounddevice==0.5.6`, `httpx==0.28.1`, `websockets==17.1`, `PyYAML==6.0.3`, `python-dotenv==1.2.3`, the `nvidia-*-cu12` wheels). Keep `pytest`/`ruff` out of runtime. Document the optional extras: `pycaw` (duck) and `openwakeword` (wake word).
   - *Acceptance:* a fresh venv from `requirements.txt` runs the app. `pip install -r requirements-dev.txt` then `pytest` works. The README explains how to bump pins.
   - *Depends on:* V0-01
 
-- [ ] **V0-04: Lightweight CI and stricter lint**
+- [x] **V0-04: Lightweight CI and stricter lint**
   - *Why:* catch regressions on push. Fixes: N-25.
   - *Files:* create `.github/workflows/ci.yml`, `.gitattributes`; edit `pyproject.toml`
   - *Do:* add a GitHub Actions `windows-latest` job, Python 3.11, that installs `requirements-dev.txt` without the `nvidia-*` wheels (or with `--no-deps` for them) and runs `ruff check` and `pytest -q`. Extend ruff to `E,F,I,B,UP,ASYNC` and fix or ignore findings in a separate commit. In `.gitattributes`, set `*.bat text eol=crlf`, `*.onnx binary` and `* text=auto`. Choose a `LICENSE` yourself; Cursor must not pick one.
