@@ -17,6 +17,14 @@ def test_start_bat_fails_loudly_and_stamps_only_after_pip():
     assert install_at < error_at < stamp_at
     assert "Failed to create the virtualenv." in text
     assert "Could not read server.host and server.port" in text
+    assert "set EXTRAS=0" in text
+    gate = text.index('if "%EXTRAS%"=="1"')
+    extras_pip = text.index("pip install -r requirements-extras.txt")
+    assert gate < extras_pip
+    assert text.index("pip install -r requirements.txt") < gate
+    extras = (ROOT / "requirements-extras.txt").read_text(encoding="utf-8")
+    assert "pycaw==20260927" in extras
+    assert "openwakeword==0.6.0" in extras
 
 
 def test_shipped_config_keeps_optional_feeds_off():

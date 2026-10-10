@@ -286,19 +286,19 @@ Do these on a test stream or with the booth open before relying on the features.
 
 ### Phase 5: Docs and packaging
 
-- [ ] **V3-P5-01 🟡 README refresh**
+- [x] **V3-P5-01 🟡 README refresh**
   - *Do:* document duck app lists (V3-P1-07), wake-word tuning, the action scopes list, IPv6 note, recap/session behaviour, custom commands, the control key, and the owner checklist. Fix "endpoint ducking" and "`!so` shouts out the last raider" (it also takes a name).
   - *Files:* `README.md`, `config.yaml` comments
   - *Acceptance:* every config key in `settings.py` is mentioned in README or `config.yaml` comments (add a test that greps for them).
   - *Depends on:* the features you chose
 
-- [ ] **V3-P5-02 🟡 Optional extras file**
+- [x] **V3-P5-02 🟡 Optional extras file**
   - *Do:* add `requirements-extras.txt` with pinned `pycaw` and `openwakeword`; `start.bat --extras` installs it. Health shows "installed / not installed" for each extra.
   - *Files:* `requirements-extras.txt`, `start.bat`, `src/health.py`, `README.md`, `tests/test_start_bat.py`
   - *Acceptance:* `start.bat --extras` installs both; without the flag nothing extra is installed.
   - *Depends on:* none
 
-- [ ] **V3-P5-03 🟡 Release tag and changelog**
+- [x] **V3-P5-03 🟡 Release tag and changelog**
   - *Do:* add `CHANGELOG.md` (v0.1 = PLAN-v2 work, v0.2 = this plan), bump `pyproject.toml` version, tag `v0.2.0` after Phase 1–2 merge (owner pushes the tag).
   - *Files:* `CHANGELOG.md`, `pyproject.toml`
   - *Acceptance:* changelog lists each merged PR; version matches the tag.
